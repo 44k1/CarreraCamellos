@@ -1,12 +1,10 @@
 package cliente;
 
 import protocolos.*;
-import servidor.ServidorEmparejamiento;
 
 import javax.imageio.ImageIO;
 import javax.swing.*;
 import java.awt.*;
-import java.awt.event.*;
 import java.io.*;
 import java.net.*;
 import java.util.*;
@@ -20,7 +18,7 @@ public class ClienteCamel extends JFrame {
     private MulticastSocket multicastSocket;
     private InetAddress grupo;
     private int miPosicion = 0;
-    private final int META = 600;
+    private final int META = 650;
     private boolean carreraTerminada = false;
 
     private JPanel panelPista;
@@ -31,6 +29,9 @@ public class ClienteCamel extends JFrame {
     private final int numeroJugadores = 4;
     private ConcurrentHashMap<String, Integer> posiciones; // id -> posición
     private Image camelImage;
+
+    // Cambiar a IP de la interfaz local correcta en cada cliente
+    private static final String INTERFAZ_RED_LOCAL = "localhost";
 
     private static final Color COLOR_CALLE = new Color(204, 153, 102);
     private static final Color COLOR_LINEA_FIN = Color.BLACK;
@@ -46,7 +47,7 @@ public class ClienteCamel extends JFrame {
         try {
             camelImage = ImageIO.read(new File("camel.png"));
         } catch (IOException e) {
-            System.err.println("No se pudo cargar la imagen camello.png, se usará dibujo básico");
+            System.out.println("No se pudo cargar camel.png, se usará dibujo básico");
             camelImage = null;
         }
     }
@@ -71,49 +72,43 @@ public class ClienteCamel extends JFrame {
             protected void paintComponent(Graphics g) {
                 super.paintComponent(g);
                 int yEspacio = 60;
-                int padding = 20; // espacio arriba y abajo
+                int padding = 20;
                 int pistaAlto = yEspacio - 10;
                 int anchoFinish = 5;
                 int finishX = META + 50;
 
-                // dibujar calles y fondo
                 g.setColor(COLOR_CALLE);
-                g.fillRect(0, padding / 2, getWidth(), getHeight());
+                g.fillRect(0, padding/2, getWidth(), getHeight());
 
                 for (int i = 0; i < numeroJugadores; i++) {
                     int y = padding + i * yEspacio;
-                    // pintar calle individual
                     g.setColor(new Color(200, 180, 150));
                     g.fillRect(0, y - 5, getWidth(), pistaAlto);
-
-                    // pintar línea separación
                     g.setColor(Color.DARK_GRAY);
-                    g.drawLine(0, y + pistaAlto / 2, getWidth(), y + pistaAlto / 2);
+                    g.drawLine(0, y + pistaAlto/2, getWidth(), y + pistaAlto/2);
                 }
 
-                // línea meta
                 g.setColor(COLOR_LINEA_FIN);
-                g.fillRect(finishX, padding / 2, anchoFinish, 4 * yEspacio);
+                g.fillRect(finishX, padding/2, anchoFinish, numeroJugadores * yEspacio);
 
-                // Dibujar camellos
                 int i = 0;
-                for (Map.Entry<String, Integer> entry : posiciones.entrySet()) {
-                    String nombre = entry.getKey();
-                    int x = entry.getValue();
+                for (Map.Entry<String, Integer> p : posiciones.entrySet()) {
+                    String nombre = p.getKey();
+                    int x = p.getValue();
                     int y = padding + i * yEspacio;
-                    if (camelImage != null) {
+
+                    if (camelImage != null)
                         g.drawImage(camelImage, x, y, 50, 40, this);
-                    } else {
+                    else {
                         g.setColor(Color.RED);
                         g.fillOval(x, y + 10, 40, 20);
                     }
-                    // Dibuja el nombre encima o al lado del camello
+
                     g.setColor(Color.BLACK);
                     g.setFont(new Font("Arial", Font.BOLD, 12));
-                    g.drawString(nombre, x, y + 9); // Ajusta posición vertical del texto
+                    g.drawString(nombre, x, y + 9);
                     i++;
                 }
-
             }
         };
 
@@ -127,7 +122,6 @@ public class ClienteCamel extends JFrame {
         btnAvanzar.setEnabled(false);
         btnAvanzar.addActionListener(e -> avanzarCamello());
         panelControl.add(btnAvanzar);
-
         add(panelControl, BorderLayout.SOUTH);
 
         setLocationRelativeTo(null);
@@ -167,6 +161,10 @@ public class ClienteCamel extends JFrame {
     private void unirCanalMulticast() throws IOException {
         grupo = InetAddress.getByName(ipMulticast);
         multicastSocket = new MulticastSocket(puertoMulticast);
+
+        NetworkInterface ni = NetworkInterface.getByInetAddress(InetAddress.getByName(INTERFAZ_RED_LOCAL));
+        multicastSocket.setNetworkInterface(ni);
+
         multicastSocket.joinGroup(grupo);
 
         Thread receptor = new Thread(() -> {

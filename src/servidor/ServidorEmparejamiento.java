@@ -5,7 +5,6 @@ import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
 import protocolos.*;
-// Usa las clases protocolo arriba definidas o importalas donde corresponda
 
 public class ServidorEmparejamiento {
     private final int puertoControl = 5000;
@@ -14,7 +13,11 @@ public class ServidorEmparejamiento {
     private int siguienteIdGrupo = 0;
     private final int MAX_GRUPOS = 3;
     private List<Socket> esperaClientes = Collections.synchronizedList(new ArrayList<>());
-    private List<String> ipsMulticast = Arrays.asList("230.0.0.1", "230.0.0.2", "230.0.0.3");
+
+    // Rangos multicast válidos para grupos
+    private List<String> ipsMulticast = Arrays.asList(
+            "239.0.0.1", "239.0.0.2", "239.0.0.3"
+    );
     private int puertoMulticastBase = 6000;
 
     public ServidorEmparejamiento() throws IOException {
@@ -26,24 +29,25 @@ public class ServidorEmparejamiento {
         log("[SERVIDOR] Esperando clientes...");
         while(true) {
             Socket cliente = serverSocket.accept();
-            log("[SERVIDOR] Conexión aceptada desde: " + cliente.getInetAddress());
+            log("[SERVIDOR] Cliente conectado desde: " + cliente.getInetAddress());
+
             new Thread(() -> {
                 try {
                     ObjectInputStream ois = new ObjectInputStream(cliente.getInputStream());
                     SolicitudConexion solicitud = (SolicitudConexion) ois.readObject();
-                    log("[SERVIDOR] Solicitud de conexión recibida de cliente: " + solicitud.idCliente);
+                    log("[SERVIDOR] Solicitud de conexión de cliente: " + solicitud.idCliente);
 
                     synchronized (esperaClientes) {
                         esperaClientes.add(cliente);
-                        log("[SERVIDOR] Clientes en espera: " + esperaClientes.size() + "/4");
+                        log("[SERVIDOR] Clientes en espera: " + esperaClientes.size());
 
-                        if (esperaClientes.size() >= 4) {
+                        if(esperaClientes.size() >= 4) {
                             formarGrupo(4);
                         }
                     }
-                } catch (Exception ex) {
-                    log("[SERVIDOR ERROR] Excepción procesando cliente: " + ex.getMessage());
-                    ex.printStackTrace();
+                } catch (Exception e) {
+                    log("[SERVIDOR ERROR] " + e.getMessage());
+                    e.printStackTrace();
                 }
             }).start();
         }
@@ -57,13 +61,13 @@ public class ServidorEmparejamiento {
 
             String ipMulticast = ipsMulticast.get(idGrupo % ipsMulticast.size());
             int puerto = puertoMulticastBase + idGrupo;
-            log("[SERVIDOR] Formando grupo ID: " + idGrupo + " con IP Multicast: " + ipMulticast + " y puerto: " + puerto);
 
             List<Socket> grupoClientes = new ArrayList<>();
-            for (int i=0; i<tamGrupo; i++) {
+            for (int i=0; i < tamGrupo; i++) {
                 Socket cliente = esperaClientes.remove(0);
-                log("[SERVIDOR] Cliente removido de espera para grupo " + idGrupo + ": " + cliente.getInetAddress());
                 grupoClientes.add(cliente);
+                log("[SERVIDOR] Cliente removido de espera para grupo " + idGrupo + ": "
+                        + cliente.getInetAddress());
             }
             long semilla = System.currentTimeMillis();
             for(Socket cliente: grupoClientes) {
@@ -72,22 +76,22 @@ public class ServidorEmparejamiento {
                     AsignacionGrupo asignacion = new AsignacionGrupo(idGrupo, ipMulticast, puerto, tamGrupo, semilla);
                     oos.writeObject(asignacion);
                     oos.flush();
-                    log("[SERVIDOR] Asignación enviada a cliente " + cliente.getInetAddress() + " para grupo " + idGrupo);
+                    log("[SERVIDOR] Enviada asignación multicast a cliente: " + cliente.getInetAddress());
                 } catch (IOException e) {
-                    log("[SERVIDOR ERROR] No se pudo enviar asignación a cliente " + cliente.getInetAddress() + ": " + e.getMessage());
+                    log("[SERVIDOR ERROR] Al enviar asignación grupo: " + e.getMessage());
                     e.printStackTrace();
                 }
             }
-            log("[SERVIDOR] Grupo " + idGrupo + " formado correctamente con " + tamGrupo + " clientes");
+            log("[SERVIDOR] Grupo " + idGrupo + " formado con %d clientes".formatted(tamGrupo));
 
         } catch (InterruptedException e) {
-            log("[SERVIDOR ERROR] Error al formar grupo: " + e.getMessage());
+            log("[SERVIDOR ERROR] " + e.getMessage());
             e.printStackTrace();
         }
     }
 
-    private void log(String mensaje) {
-        System.out.println("[" + new Date() + "] " + mensaje);
+    private void log(String msg) {
+        System.out.println("[" + new Date() + "] " + msg);
     }
 
     public static void main(String[] args) throws IOException {
