@@ -89,8 +89,6 @@ public class ClienteCamel extends JFrame {
                 g.setColor(COLOR_LINEA_FIN);
                 g.fillRect(finishX, padding/2, anchoFinish, numeroJugadores * yEspacio);
 
-                System.out.println("[CLIENTE PAINT] Dibujando " + posiciones.size() + " camellos");
-
                 for (Map.Entry<String, Integer> p : posiciones.entrySet()) {
                     String nombre = p.getKey();
                     int pos = p.getValue();
@@ -143,7 +141,9 @@ public class ClienteCamel extends JFrame {
             socketServidor = new Socket(ipServidor, puertoServidor);
             System.out.println("[CLIENTE] Socket conectado");
 
+            // IMPORTANTE: OutputStream ANTES que InputStream para evitar deadlock
             oosServidor = new ObjectOutputStream(socketServidor.getOutputStream());
+            oosServidor.flush();
             oisServidor = new ObjectInputStream(socketServidor.getInputStream());
             System.out.println("[CLIENTE] Streams creados");
 
@@ -171,13 +171,8 @@ public class ClienteCamel extends JFrame {
             carriles.put(idCliente, carril);
             System.out.println("[CLIENTE] Mi carril: " + carril);
 
-            // Iniciar thread de heartbeat
             iniciarHeartbeat();
-
-            // Iniciar thread receptor de eventos
             iniciarReceptor();
-
-            // Enviar evento inicial
             enviarEvento(EventoCarrera.TipoEvento.PASO, 0);
 
             lblEstado.setText("Estado: En carrera - Grupo " + idGrupo);
