@@ -280,7 +280,11 @@ public class ClienteCamel extends JFrame {
         }).start();
 
         // Enviar evento inicial y activar botón
-        Thread.sleep(1000);
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
         enviarEvento(EventoCarrera.TipoEvento.PASO, 0);
         lblEstado.setText("Estado: En carrera - Grupo " + idGrupo);
         btnAvanzar.setEnabled(true);
