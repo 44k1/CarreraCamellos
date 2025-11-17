@@ -142,21 +142,28 @@ public class ClienteCamel extends JFrame {
             socket.close();
 
             posiciones.put(idCliente, 0);
-            unirCanalMulticast();
 
-            // Enviar evento posición inicial para sincronizar los demás
+            System.out.println("[CLIENTE] Configuración recibida - Grupo: " + idGrupo +
+                    " Multicast: " + ipMulticast + ":" + puertoMulticast);
+
+            unirCanalMulticast();  // AQUÍ SE DEBE UNIR A MULTICAST
+
+            // Enviar evento inicial
             enviarEvento(EventoCarrera.TipoEvento.PASO, 0);
+
+            System.out.println("[CLIENTE] Evento PASO inicial enviado");
 
             lblEstado.setText("Estado: En carrera - Grupo " + idGrupo);
             btnAvanzar.setEnabled(true);
             repaint();
 
         } catch (Exception e) {
-            lblEstado.setText("ERROR: no se pudo conectar");
-            JOptionPane.showMessageDialog(this, "Error: " + e.getMessage());
+            lblEstado.setText("ERROR: " + e.getMessage());
+            System.err.println("[CLIENTE] Error conectando: " + e.getMessage());
             e.printStackTrace();
         }
     }
+
     private void enviarHeartbeat() {
         new Thread(() -> {
             while (!carreraTerminada) {
@@ -181,11 +188,35 @@ public class ClienteCamel extends JFrame {
         multicastSocket = new MulticastSocket(puertoMulticast);
 
         NetworkInterface ni = NetworkInterface.getByInetAddress(InetAddress.getByName(INTERFAZ_RED_LOCAL));
-        multicastSocket.setNetworkInterface(ni);
+        if (ni != null) multicastSocket.setNetworkInterface(ni);
 
         multicastSocket.joinGroup(grupo);
-        enviarHeartbeat();
+        System.out.println("[CLIENTE] Unido a multicast");
+
+        // Iniciar heartbeat thread
+        new Thread(() -> {
+            System.out.println("[CLIENTE] Iniciando heartbeat...");
+            while (!carreraTerminada) {
+                try {
+                    Heartbeat hb = new Heartbeat(idCliente, System.currentTimeMillis());
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    ObjectOutputStream oos = new ObjectOutputStream(baos);
+                    oos.writeObject(hb);
+                    oos.flush();
+                    byte[] data = baos.toByteArray();
+                    DatagramPacket packet = new DatagramPacket(data, data.length, grupo, puertoMulticast);
+                    multicastSocket.send(packet);
+                    System.out.println("[CLIENTE] Heartbeat enviado");
+                    Thread.sleep(5000);
+                } catch (Exception e) {
+                    System.err.println("[CLIENTE ERROR Heartbeat] " + e.getMessage());
+                }
+            }
+        }).start();
+
+        // Thread receptor
         Thread receptor = new Thread(() -> {
+            System.out.println("[CLIENTE] Receptor multicast iniciado");
             while (!carreraTerminada) {
                 try {
                     byte[] buffer = new byte[4096];
@@ -202,13 +233,15 @@ public class ClienteCamel extends JFrame {
                         procesarFinCarrera(fin);
                     }
                 } catch (Exception e) {
-                    if (!carreraTerminada) e.printStackTrace();
+                    if (!carreraTerminada) System.err.println("[CLIENTE ERROR Receptor] " + e.getMessage());
                 }
             }
         });
         receptor.setDaemon(true);
         receptor.start();
     }
+
+
 
     private void avanzarCamello() {
         if (carreraTerminada) return;
@@ -229,6 +262,10 @@ public class ClienteCamel extends JFrame {
     }
 
     private void enviarEvento(EventoCarrera.TipoEvento tipo, int pos) {
+        if (grupo == null || multicastSocket == null) {
+            System.err.println("[CLIENTE ERROR] grupo o multicastSocket es null!");
+            return;
+        }
         try {
             EventoCarrera evento = new EventoCarrera(tipo, idCliente, System.currentTimeMillis(), pos);
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -238,10 +275,13 @@ public class ClienteCamel extends JFrame {
             byte[] data = baos.toByteArray();
             DatagramPacket packet = new DatagramPacket(data, data.length, grupo, puertoMulticast);
             multicastSocket.send(packet);
+            System.out.println("[CLIENTE] Evento " + tipo + " enviado");
         } catch (IOException e) {
+            System.err.println("[CLIENTE ERROR] Error enviando evento: " + e.getMessage());
             e.printStackTrace();
         }
     }
+
 
     private void procesarEventoCarrera(EventoCarrera evento) {
         posiciones.put(evento.idCliente, evento.pos);
