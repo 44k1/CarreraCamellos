@@ -24,6 +24,9 @@ public class ServidorEmparejamiento {
     private Map<String, Long> clienteUltimoHeartbeat = new ConcurrentHashMap<>();
     private Map<Integer, Map<String, Integer>> grupoPosiciones = new ConcurrentHashMap<>();
 
+    // Map para guardar ObjectOutputStream por cliente
+    private Map<String, ObjectOutputStream> outputStreamsPorCliente = new ConcurrentHashMap<>();
+
     private static final long TIMEOUT_HEARTBEAT = 20000;
 
     public ServidorEmparejamiento() throws IOException {
@@ -83,11 +86,13 @@ public class ServidorEmparejamiento {
         }
     }
 
-
     private void agregarClienteAEspera(Socket cliente, String idCliente, ObjectOutputStream oos) {
         clientesPorGrupo.computeIfAbsent(siguienteIdGrupo, k -> new ArrayList<>()).add(cliente);
         grupoPosiciones.computeIfAbsent(siguienteIdGrupo, k -> new ConcurrentHashMap<>()).put(idCliente, 0);
         clienteUltimoHeartbeat.put(idCliente, System.currentTimeMillis());
+
+        // Guardar el ObjectOutputStream una vez y reutilizarlo
+        outputStreamsPorCliente.put(idCliente, oos);
 
         int clientesActuales = clientesPorGrupo.get(siguienteIdGrupo).size();
         System.out.println("[SERVIDOR] Clientes en grupo " + siguienteIdGrupo + ": " + clientesActuales);
@@ -113,12 +118,15 @@ public class ServidorEmparejamiento {
 
         AsignacionGrupo asignacion = new AsignacionGrupo(idGrupo, ipMulticast, puertoMulticast, TAM_GRUPO, System.currentTimeMillis());
 
-        for (Socket cliente : listaClientes) {
-            ObjectOutputStream oos = new ObjectOutputStream(cliente.getOutputStream());
-            oos.flush();
-            oos.writeObject(asignacion);
-            oos.flush();
-            System.out.println("[SERVIDOR] AsignacionGrupo enviado!");
+        for (String clienteId : outputStreamsPorCliente.keySet()) {
+            ObjectOutputStream oos = outputStreamsPorCliente.get(clienteId);
+            try {
+                oos.writeObject(asignacion);
+                oos.flush();
+                System.out.println("[SERVIDOR] AsignacionGrupo enviado a " + clienteId + "!");
+            } catch (IOException e) {
+                System.err.println("[SERVIDOR ERROR] Al enviar asignación a " + clienteId + ": " + e.getMessage());
+            }
         }
 
         new Thread(() -> proxyMulticastUDP(idGrupo, ipMulticast, puertoMulticast)).start();
@@ -132,7 +140,7 @@ public class ServidorEmparejamiento {
 
             InetAddress grupo = InetAddress.getByName(ipMulticast);
 
-            // Unirse usando null para aceptar todas interfaces
+            // Unirse a grupo multicast en cualquier interfaz
             msocket.joinGroup(new InetSocketAddress(grupo, puertoMulticast), null);
 
             System.out.println("[SERVIDOR PROXY] Unido a multicast " + ipMulticast + ":" + puertoMulticast);
@@ -141,7 +149,7 @@ public class ServidorEmparejamiento {
 
             while (true) {
                 try {
-                    byte[] buffer = new byte[8192];  // NUEVO cada ciclo
+                    byte[] buffer = new byte[8192];
                     DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                     msocket.receive(packet);
 
@@ -166,9 +174,9 @@ public class ServidorEmparejamiento {
                         System.err.println("[SERVIDOR PROXY] Error deserializando UDP: " + e.getMessage());
                     }
 
-                    // Reenviar DATAGRAM EXACTO a multicast IP y puerto
-                    DatagramPacket envio = new DatagramPacket(packet.getData(), packet.getLength(), grupo, puertoMulticast);
-                    reenvioSocket.send(envio);
+                    // Reenviar el paquete EXACTO a multicast
+                    DatagramPacket reenvioPacket = new DatagramPacket(packet.getData(), packet.getLength(), grupo, puertoMulticast);
+                    reenvioSocket.send(reenvioPacket);
                     System.out.println("[SERVIDOR PROXY] Paquete reenviado a multicast");
 
                 } catch (IOException e) {
@@ -180,7 +188,6 @@ public class ServidorEmparejamiento {
             e.printStackTrace();
         }
     }
-
 
     private void monitorHeartbeat() {
         while (true) {
@@ -197,8 +204,11 @@ public class ServidorEmparejamiento {
 
                 for (String idCliente : desconectados) {
                     clienteUltimoHeartbeat.remove(idCliente);
+                    System.out.println("[SERVIDOR MONITOR] Cliente desconectado por timeout: " + idCliente);
                 }
-            } catch (Exception e) {}
+            } catch (Exception e) {
+                System.err.println("[SERVIDOR MONITOR ERROR] " + e.getMessage());
+            }
         }
     }
 

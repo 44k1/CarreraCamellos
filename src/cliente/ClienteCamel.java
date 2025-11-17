@@ -364,7 +364,7 @@ public class ClienteCamel extends JFrame {
             ClienteCamel cliente = new ClienteCamel(id.trim());
             cliente.setVisible(true);
             new Thread(() -> {
-                cliente.conectarServidor("192.168.113.120", 5000);
+                cliente.conectarServidor("localhost", 5000);
             }).start();
         });
     }
