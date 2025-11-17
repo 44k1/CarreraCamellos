@@ -90,8 +90,6 @@ public class ClienteCamel extends JFrame {
                 g.setColor(COLOR_LINEA_FIN);
                 g.fillRect(finishX, padding/2, anchoFinish, numeroJugadores * yEspacio);
 
-                System.out.println("[CLIENTE PAINT] Dibujando " + posiciones.size() + " camellos");
-
                 for (Map.Entry<String, Integer> p : posiciones.entrySet()) {
                     String nombre = p.getKey();
                     int pos = p.getValue();
@@ -101,7 +99,6 @@ public class ClienteCamel extends JFrame {
                         carril = (nombre.hashCode() % numeroJugadores);
                         if (carril < 0) carril += numeroJugadores;
                         carriles.put(nombre, carril);
-                        System.out.println("[CLIENTE PAINT]   Asignado carril " + carril + " a '" + nombre + "'");
                     }
 
                     int y = padding + carril * yEspacio;
@@ -117,7 +114,6 @@ public class ClienteCamel extends JFrame {
                     g.setColor(Color.BLACK);
                     g.setFont(new Font("Arial", Font.BOLD, 12));
                     g.drawString(nombre, x, y + 9);
-                    System.out.println("[CLIENTE PAINT]   Dibujado '" + nombre + "' en carril " + carril + " pos " + x);
                 }
             }
         };
@@ -138,24 +134,36 @@ public class ClienteCamel extends JFrame {
     }
 
     public void conectarServidor(String ipServidor, int puertoServidor) {
+        Socket socket = null;
+        ObjectOutputStream oos = null;
+        ObjectInputStream ois = null;
+
         try {
             lblEstado.setText("Estado: Conectando al servidor...");
             System.out.println("[CLIENTE] ========================================");
             System.out.println("[CLIENTE] Conectando a " + ipServidor + ":" + puertoServidor);
 
-            Socket socket = new Socket(ipServidor, puertoServidor);
+            socket = new Socket(ipServidor, puertoServidor);
             System.out.println("[CLIENTE] Socket conectado");
 
-            ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
-            ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
+            // IMPORTANTE: Crear OOS primero y hacer flush
+            oos = new ObjectOutputStream(socket.getOutputStream());
+            oos.flush();
+            System.out.println("[CLIENTE] ObjectOutputStream creado y flushed");
+
+            // Ahora crear OIS
+            ois = new ObjectInputStream(socket.getInputStream());
+            System.out.println("[CLIENTE] ObjectInputStream creado");
 
             SolicitudConexion solicitud = new SolicitudConexion(idCliente);
             System.out.println("[CLIENTE] >>> Enviando SolicitudConexion: '" + solicitud.idCliente + "'");
             oos.writeObject(solicitud);
             oos.flush();
+            System.out.println("[CLIENTE] Solicitud enviada");
 
             System.out.println("[CLIENTE] Esperando AsignacionGrupo...");
             Object objAsignacion = ois.readObject();
+            System.out.println("[CLIENTE] Objeto recibido: " + objAsignacion.getClass().getSimpleName());
 
             if (!(objAsignacion instanceof AsignacionGrupo)) {
                 System.err.println("[CLIENTE ERROR] Recibido: " + objAsignacion.getClass());
@@ -193,7 +201,7 @@ public class ClienteCamel extends JFrame {
         }
     }
 
-    private void unirCanalMulticast() throws IOException {
+    private void unirCanalMulticast() throws Exception {
         System.out.println("[CLIENTE MCAST] Uniendo a multicast...");
 
         grupo = InetAddress.getByName(ipMulticast);
@@ -201,7 +209,7 @@ public class ClienteCamel extends JFrame {
 
         multicastSocket = new MulticastSocket(puertoMulticast);
         multicastSocket.setReuseAddress(true);
-        System.out.println("[CLIENTE MCAST] MulticastSocket creado");
+        System.out.println("[CLIENTE MCAST] MulticastSocket creado en puerto " + puertoMulticast);
 
         try {
             NetworkInterface ni = NetworkInterface.getByInetAddress(InetAddress.getLocalHost());
@@ -214,11 +222,11 @@ public class ClienteCamel extends JFrame {
         }
 
         multicastSocket.joinGroup(new InetSocketAddress(grupo, puertoMulticast), null);
-        System.out.println("[CLIENTE MCAST] Unido a grupo multicast");
+        System.out.println("[CLIENTE MCAST] Unido a grupo multicast " + ipMulticast + ":" + puertoMulticast);
 
         // Thread heartbeat
         new Thread(() -> {
-            System.out.println("[CLIENTE HB] Iniciado");
+            System.out.println("[CLIENTE HB] Thread iniciado");
             while (!carreraTerminada) {
                 try {
                     Heartbeat hb = new Heartbeat(idCliente, System.currentTimeMillis());
@@ -232,20 +240,20 @@ public class ClienteCamel extends JFrame {
                     System.out.println("[CLIENTE HB] >>> Enviado (" + data.length + " bytes)");
                     Thread.sleep(3000);
                 } catch (Exception e) {
-                    System.err.println("[CLIENTE HB ERROR] " + e.getMessage());
-                    break;
+                    if (!carreraTerminada) {
+                        System.err.println("[CLIENTE HB ERROR] " + e.getMessage());
+                    }
                 }
             }
         }).start();
 
         // Thread receptor
         new Thread(() -> {
-            System.out.println("[CLIENTE RX] Iniciado");
+            System.out.println("[CLIENTE RX] Thread iniciado");
             while (!carreraTerminada) {
                 try {
                     byte[] buffer = new byte[8192];
                     DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                    System.out.println("[CLIENTE RX] Esperando paquete...");
                     multicastSocket.receive(packet);
                     System.out.println("[CLIENTE RX] <<< RECIBIDO (" + packet.getLength() + " bytes)");
 
@@ -273,22 +281,20 @@ public class ClienteCamel extends JFrame {
                     System.err.println("[CLIENTE RX] EOF");
                     break;
                 } catch (Exception e) {
-                    System.err.println("[CLIENTE RX ERROR] " + e.getMessage());
-                    break;
+                    if (!carreraTerminada) {
+                        System.err.println("[CLIENTE RX ERROR] " + e.getMessage());
+                    }
                 }
             }
         }).start();
 
-        // Enviar evento inicial y activar botón
-        try {
-            Thread.sleep(1000);
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        }
+        // Esperar un poco antes de enviar evento inicial
+        Thread.sleep(500);
         enviarEvento(EventoCarrera.TipoEvento.PASO, 0);
+
         lblEstado.setText("Estado: En carrera - Grupo " + idGrupo);
         btnAvanzar.setEnabled(true);
-        repaint();
+        SwingUtilities.invokeLater(this::repaint);
     }
 
     private void avanzarCamello() {
@@ -362,11 +368,7 @@ public class ClienteCamel extends JFrame {
             ClienteCamel cliente = new ClienteCamel(id.trim());
             cliente.setVisible(true);
             new Thread(() -> {
-                try {
-                    cliente.conectarServidor("192.168.113.120", 5000);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
+                cliente.conectarServidor("192.168.113.120", 5000);
             }).start();
         });
     }

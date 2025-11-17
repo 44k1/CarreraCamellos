@@ -8,7 +8,7 @@ import java.util.concurrent.*;
 
 public class ServidorEmparejamiento {
 
-    private final int puertoControl = 5000;  // TCP solo para asignación inicial
+    private final int puertoControl = 5000;
     private ServerSocket serverSocket;
     private Semaphore semaforoIdGrupo = new Semaphore(1);
     private int siguienteIdGrupo = 0;
@@ -28,6 +28,7 @@ public class ServidorEmparejamiento {
 
     public ServidorEmparejamiento() throws IOException {
         serverSocket = new ServerSocket(puertoControl);
+        serverSocket.setReuseAddress(true);
         System.out.println("[SERVIDOR] ========================================");
         System.out.println("[SERVIDOR] Servidor iniciado en puerto " + puertoControl);
         System.out.println("[SERVIDOR] TAM_GRUPO = " + TAM_GRUPO);
@@ -50,10 +51,20 @@ public class ServidorEmparejamiento {
     }
 
     private void manejarCliente(Socket cliente) {
+        ObjectInputStream ois = null;
+        ObjectOutputStream oos = null;
         try {
-            System.out.println("[SERVIDOR] Leyendo solicitud de conexión...");
-            ObjectInputStream ois = new ObjectInputStream(cliente.getInputStream());
+            System.out.println("[SERVIDOR] [Thread-" + Thread.currentThread().getId() + "] Inicializando streams...");
+
+            // IMPORTANTE: Crear OOS antes que OIS
+            oos = new ObjectOutputStream(cliente.getOutputStream());
+            oos.flush();
+            ois = new ObjectInputStream(cliente.getInputStream());
+
+            System.out.println("[SERVIDOR] [Thread-" + Thread.currentThread().getId() + "] Streams listos, leyendo solicitud...");
+
             Object obj = ois.readObject();
+            System.out.println("[SERVIDOR] [Thread-" + Thread.currentThread().getId() + "] Objeto leído: " + obj.getClass().getSimpleName());
 
             if (!(obj instanceof SolicitudConexion)) {
                 System.err.println("[SERVIDOR ERROR] Objeto no es SolicitudConexion: " + obj.getClass());
@@ -65,7 +76,7 @@ public class ServidorEmparejamiento {
             System.out.println("[SERVIDOR] >>> Cliente conectado: '" + idCliente + "'");
 
             synchronized (this) {
-                agregarClienteAEspera(cliente, idCliente);
+                agregarClienteAEspera(cliente, idCliente, oos);
             }
         } catch (Exception e) {
             System.err.println("[SERVIDOR ERROR] En manejarCliente: " + e.getMessage());
@@ -73,7 +84,7 @@ public class ServidorEmparejamiento {
         }
     }
 
-    private void agregarClienteAEspera(Socket cliente, String idCliente) {
+    private void agregarClienteAEspera(Socket cliente, String idCliente, ObjectOutputStream oos) {
         System.out.println("[SERVIDOR]   -> Agregando cliente '" + idCliente + "' al grupo " + siguienteIdGrupo);
 
         clientesPorGrupo.computeIfAbsent(siguienteIdGrupo, k -> new ArrayList<>()).add(cliente);
@@ -132,7 +143,6 @@ public class ServidorEmparejamiento {
             msocket.setReuseAddress(true);
             InetAddress grupo = InetAddress.getByName(ipMulticast);
 
-            // Unirse a multicast en todas las interfaces
             msocket.joinGroup(new InetSocketAddress(grupo, puertoMulticast), null);
 
             System.out.println("[SERVIDOR PROXY] Unido a multicast grupo");
@@ -168,7 +178,7 @@ public class ServidorEmparejamiento {
                     System.err.println("[SERVIDOR PROXY ERROR] Deserializar: " + e.getMessage());
                 }
 
-                // REENVIAR el paquete exactamente igual a multicast (para que lo reciban todos)
+                // REENVIAR el paquete exactamente igual a multicast
                 System.out.println("[SERVIDOR PROXY] >>> REENVIANDO a multicast");
                 DatagramPacket reenvioPacket = new DatagramPacket(
                         packet.getData(),
