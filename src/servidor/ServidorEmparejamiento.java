@@ -14,7 +14,7 @@ public class ServidorEmparejamiento {
 
     private Semaphore semaforoIdGrupo = new Semaphore(1);
     private int siguienteIdGrupo = 0;
-    private final int TAM_GRUPO = 4;
+    private final int TAM_GRUPO = 2;
     private final int MAX_GRUPOS = 3;
 
     private List<String> ipsMulticast = Arrays.asList(

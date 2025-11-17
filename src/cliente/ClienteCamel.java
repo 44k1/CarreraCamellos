@@ -31,7 +31,7 @@ public class ClienteCamel extends JFrame {
     private Image camelImage;
 
     // Cambiar a IP de la interfaz local correcta en cada cliente
-    private static final String INTERFAZ_RED_LOCAL = "localhost";
+    private static final String INTERFAZ_RED_LOCAL = "192.168.113.120";
 
     private static final Color COLOR_CALLE = new Color(204, 153, 102);
     private static final Color COLOR_LINEA_FIN = Color.BLACK;
@@ -157,7 +157,25 @@ public class ClienteCamel extends JFrame {
             e.printStackTrace();
         }
     }
-
+    private void enviarHeartbeat() {
+        new Thread(() -> {
+            while (!carreraTerminada) {
+                try {
+                    Heartbeat hb = new Heartbeat(idCliente, System.currentTimeMillis());
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    ObjectOutputStream oos = new ObjectOutputStream(baos);
+                    oos.writeObject(hb);
+                    oos.flush();
+                    byte[] data = baos.toByteArray();
+                    DatagramPacket packet = new DatagramPacket(data, data.length, grupo, puertoMulticast);
+                    multicastSocket.send(packet);
+                    Thread.sleep(5000); // Enviar cada 5 segundos
+                } catch (Exception e) {
+                    if (!carreraTerminada) e.printStackTrace();
+                }
+            }
+        }).start();
+    }
     private void unirCanalMulticast() throws IOException {
         grupo = InetAddress.getByName(ipMulticast);
         multicastSocket = new MulticastSocket(puertoMulticast);
@@ -166,7 +184,7 @@ public class ClienteCamel extends JFrame {
         multicastSocket.setNetworkInterface(ni);
 
         multicastSocket.joinGroup(grupo);
-
+        enviarHeartbeat();
         Thread receptor = new Thread(() -> {
             while (!carreraTerminada) {
                 try {
@@ -250,7 +268,7 @@ public class ClienteCamel extends JFrame {
             ClienteCamel cliente = new ClienteCamel(id.trim());
             cliente.setVisible(true);
             new Thread(() -> {
-                cliente.conectarServidor("localhost", 5000);
+                cliente.conectarServidor("192.168.113.120", 5000);
             }).start();
         });
     }
