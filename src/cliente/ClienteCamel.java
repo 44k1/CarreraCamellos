@@ -140,26 +140,24 @@ public class ClienteCamel extends JFrame {
 
         try {
             lblEstado.setText("Estado: Conectando al servidor...");
-            System.out.println("[CLIENTE] ========================================");
             System.out.println("[CLIENTE] Conectando a " + ipServidor + ":" + puertoServidor);
 
             socket = new Socket(ipServidor, puertoServidor);
             System.out.println("[CLIENTE] Socket conectado");
 
-            // IMPORTANTE: Crear OOS primero y hacer flush
+            // IMPORTANTE: Crear OOS primero y flush
             oos = new ObjectOutputStream(socket.getOutputStream());
             oos.flush();
             System.out.println("[CLIENTE] ObjectOutputStream creado y flushed");
 
-            // Ahora crear OIS
+            // Luego crear OIS
             ois = new ObjectInputStream(socket.getInputStream());
             System.out.println("[CLIENTE] ObjectInputStream creado");
 
             SolicitudConexion solicitud = new SolicitudConexion(idCliente);
-            System.out.println("[CLIENTE] >>> Enviando SolicitudConexion: '" + solicitud.idCliente + "'");
+            System.out.println("[CLIENTE] Enviando SolicitudConexion: '" + solicitud.idCliente + "'");
             oos.writeObject(solicitud);
             oos.flush();
-            System.out.println("[CLIENTE] Solicitud enviada");
 
             System.out.println("[CLIENTE] Esperando AsignacionGrupo...");
             Object objAsignacion = ois.readObject();
@@ -175,10 +173,10 @@ public class ClienteCamel extends JFrame {
             this.ipMulticast = asignacion.ipMulticast;
             this.puertoMulticast = asignacion.puerto;
 
-            System.out.println("[CLIENTE] >>> Asignación recibida:");
-            System.out.println("[CLIENTE]     Grupo: " + asignacion.idGrupo);
-            System.out.println("[CLIENTE]     Multicast: " + asignacion.ipMulticast + ":" + asignacion.puerto);
-            System.out.println("[CLIENTE]     TamGrupo: " + asignacion.tamGrupo);
+            System.out.println("[CLIENTE] Asignación recibida:");
+            System.out.println("[CLIENTE] Grupo: " + asignacion.idGrupo);
+            System.out.println("[CLIENTE] Multicast: " + asignacion.ipMulticast + ":" + asignacion.puerto);
+            System.out.println("[CLIENTE] TamGrupo: " + asignacion.tamGrupo);
 
             socket.close();
             System.out.println("[CLIENTE] Socket TCP cerrado");
@@ -189,10 +187,7 @@ public class ClienteCamel extends JFrame {
             carriles.put(idCliente, carril);
             System.out.println("[CLIENTE] Mi carril: " + carril);
 
-            // Unirse a multicast
             unirCanalMulticast();
-
-            System.out.println("[CLIENTE] ========================================");
 
         } catch (Exception e) {
             lblEstado.setText("ERROR: " + e.getMessage());
@@ -200,6 +195,7 @@ public class ClienteCamel extends JFrame {
             e.printStackTrace();
         }
     }
+
 
     private void unirCanalMulticast() throws Exception {
         System.out.println("[CLIENTE MCAST] Uniendo a multicast...");
