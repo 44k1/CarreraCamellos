@@ -8,18 +8,23 @@ import java.util.concurrent.*;
 
 public class ServidorEmparejamiento {
 
-    private final int puertoControl = 5000;
+    private final int puertoControl = 5000;  // TCP solo para asignación inicial
     private ServerSocket serverSocket;
     private Semaphore semaforoIdGrupo = new Semaphore(1);
     private int siguienteIdGrupo = 0;
     private final int TAM_GRUPO = 2;
     private final int MAX_GRUPOS = 3;
 
-    private Map<Integer, List<Socket>> clientesPorGrupo = new ConcurrentHashMap<>();
-    private Map<Integer, Map<String, Socket>> clientesMapaPorGrupo = new ConcurrentHashMap<>();
-    private Map<String, Long> clienteUltimoHeartbeat = new ConcurrentHashMap<>();
+    private List<String> ipsMulticast = Arrays.asList(
+            "239.0.0.1", "239.0.0.2", "239.0.0.3"
+    );
+    private int puertoMulticastBase = 6000;
 
-    private static final long TIMEOUT_HEARTBEAT = 15000;
+    private Map<Integer, List<Socket>> clientesPorGrupo = new ConcurrentHashMap<>();
+    private Map<String, Long> clienteUltimoHeartbeat = new ConcurrentHashMap<>();
+    private Map<Integer, Map<String, Integer>> grupoPosiciones = new ConcurrentHashMap<>();
+
+    private static final long TIMEOUT_HEARTBEAT = 20000;
 
     public ServidorEmparejamiento() throws IOException {
         serverSocket = new ServerSocket(puertoControl);
@@ -46,17 +51,9 @@ public class ServidorEmparejamiento {
 
     private void manejarCliente(Socket cliente) {
         try {
-            System.out.println("[SERVIDOR] Inicializando streams del cliente...");
-
-            // IMPORTANTE: Crear InputStream ANTES que OutputStream para evitar deadlock
+            System.out.println("[SERVIDOR] Leyendo solicitud de conexión...");
             ObjectInputStream ois = new ObjectInputStream(cliente.getInputStream());
-            ObjectOutputStream oos = new ObjectOutputStream(cliente.getOutputStream());
-            oos.flush();
-
-            System.out.println("[SERVIDOR] Streams creados, esperando SolicitudConexion...");
             Object obj = ois.readObject();
-
-            System.out.println("[SERVIDOR] Objeto recibido: " + obj.getClass().getSimpleName());
 
             if (!(obj instanceof SolicitudConexion)) {
                 System.err.println("[SERVIDOR ERROR] Objeto no es SolicitudConexion: " + obj.getClass());
@@ -68,7 +65,7 @@ public class ServidorEmparejamiento {
             System.out.println("[SERVIDOR] >>> Cliente conectado: '" + idCliente + "'");
 
             synchronized (this) {
-                agregarClienteAEspera(cliente, idCliente, oos);
+                agregarClienteAEspera(cliente, idCliente);
             }
         } catch (Exception e) {
             System.err.println("[SERVIDOR ERROR] En manejarCliente: " + e.getMessage());
@@ -76,26 +73,22 @@ public class ServidorEmparejamiento {
         }
     }
 
-    private void agregarClienteAEspera(Socket cliente, String idCliente, ObjectOutputStream oos) {
+    private void agregarClienteAEspera(Socket cliente, String idCliente) {
         System.out.println("[SERVIDOR]   -> Agregando cliente '" + idCliente + "' al grupo " + siguienteIdGrupo);
 
         clientesPorGrupo.computeIfAbsent(siguienteIdGrupo, k -> new ArrayList<>()).add(cliente);
-        Map<String, Socket> mapaGrupo = clientesMapaPorGrupo.computeIfAbsent(siguienteIdGrupo,
-                k -> new ConcurrentHashMap<>());
-        mapaGrupo.put(idCliente, cliente);
+        grupoPosiciones.computeIfAbsent(siguienteIdGrupo, k -> new ConcurrentHashMap<>()).put(idCliente, 0);
         clienteUltimoHeartbeat.put(idCliente, System.currentTimeMillis());
 
         int clientesActuales = clientesPorGrupo.get(siguienteIdGrupo).size();
-        System.out.println("[SERVIDOR]   -> Clientes en grupo " + siguienteIdGrupo + ": " +
-                clientesActuales + "/" + TAM_GRUPO);
+        System.out.println("[SERVIDOR]   -> Clientes en grupo " + siguienteIdGrupo + ": " + clientesActuales + "/" + TAM_GRUPO);
 
         if (clientesActuales == TAM_GRUPO) {
             System.out.println("[SERVIDOR] >>> GRUPO " + siguienteIdGrupo + " COMPLETO - Formando...");
             try {
                 asignarGrupo(siguienteIdGrupo);
-            } catch (Exception e) {
+            } catch (IOException e) {
                 System.err.println("[SERVIDOR ERROR] Al asignar grupo: " + e.getMessage());
-                e.printStackTrace();
             }
             siguienteIdGrupo++;
             if (siguienteIdGrupo >= MAX_GRUPOS) {
@@ -104,113 +97,92 @@ public class ServidorEmparejamiento {
         }
     }
 
-    private void asignarGrupo(int idGrupo) throws Exception {
-        System.out.println("[SERVIDOR] === Asignando grupo " + idGrupo + "...");
+    private void asignarGrupo(int idGrupo) throws IOException {
+        System.out.println("[SERVIDOR] Asignando grupo " + idGrupo + "...");
 
         List<Socket> listaClientes = clientesPorGrupo.get(idGrupo);
-        Map<String, Socket> mapClientes = clientesMapaPorGrupo.get(idGrupo);
+        String ipMulticast = ipsMulticast.get(idGrupo % ipsMulticast.size());
+        int puertoMulticast = puertoMulticastBase + idGrupo;
 
-        System.out.println("[SERVIDOR] Clientes en grupo: " + mapClientes.keySet());
+        System.out.println("[SERVIDOR] Grupo " + idGrupo + " -> " + ipMulticast + ":" + puertoMulticast);
 
-        AsignacionGrupo asignacion = new AsignacionGrupo(idGrupo, "239.0.0." + (idGrupo + 1),
-                6000 + idGrupo, TAM_GRUPO,
-                System.currentTimeMillis());
+        AsignacionGrupo asignacion = new AsignacionGrupo(idGrupo, ipMulticast, puertoMulticast, TAM_GRUPO, System.currentTimeMillis());
 
-        for (Map.Entry<String, Socket> entry : mapClientes.entrySet()) {
-            String idCliente = entry.getKey();
-            Socket socket = entry.getValue();
+        for (Socket cliente : listaClientes) {
             try {
-                ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
+                ObjectOutputStream oos = new ObjectOutputStream(cliente.getOutputStream());
+                System.out.println("[SERVIDOR]   -> Enviando AsignacionGrupo a cliente");
                 oos.writeObject(asignacion);
                 oos.flush();
-                System.out.println("[SERVIDOR]   -> Asignación enviada a '" + idCliente + "'");
-            } catch (Exception e) {
-                System.err.println("[SERVIDOR ERROR] Al enviar asignación a '" + idCliente + "': " +
-                        e.getMessage());
+            } catch (IOException e) {
+                System.err.println("[SERVIDOR ERROR] Al enviar asignación: " + e.getMessage());
             }
         }
 
-        // Lanzar proxy TCP para este grupo
-        new Thread(() -> proxyTCP(idGrupo, mapClientes)).start();
-        System.out.println("[SERVIDOR] === Proxy TCP iniciado para grupo " + idGrupo);
+        // Lanzar proxy UDP multicast para este grupo
+        new Thread(() -> proxyMulticastUDP(idGrupo, ipMulticast, puertoMulticast)).start();
+        System.out.println("[SERVIDOR] >>> Proxy UDP multicast iniciado para grupo " + idGrupo);
     }
 
-    private void proxyTCP(int idGrupo, Map<String, Socket> clientes) {
-        System.out.println("[SERVIDOR PROXY-" + idGrupo + "] Iniciando proxy para grupo...");
+    private void proxyMulticastUDP(int idGrupo, String ipMulticast, int puertoMulticast) {
+        try {
+            System.out.println("[SERVIDOR PROXY] Escuchando multicast " + ipMulticast + ":" + puertoMulticast);
 
-        Map<String, ObjectInputStream> receptores = new ConcurrentHashMap<>();
-        Map<String, ObjectOutputStream> emisores = new ConcurrentHashMap<>();
+            MulticastSocket msocket = new MulticastSocket(puertoMulticast);
+            msocket.setReuseAddress(true);
+            InetAddress grupo = InetAddress.getByName(ipMulticast);
 
-        for (Map.Entry<String, Socket> entry : clientes.entrySet()) {
-            try {
-                String idCliente = entry.getKey();
-                Socket socket = entry.getValue();
-                ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
-                ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
-                oos.flush();
-                receptores.put(idCliente, ois);
-                emisores.put(idCliente, oos);
-                System.out.println("[SERVIDOR PROXY-" + idGrupo + "] Streams creados para '" +
-                        idCliente + "'");
-            } catch (Exception e) {
-                System.err.println("[SERVIDOR PROXY-" + idGrupo + " ERROR] " + e.getMessage());
-            }
-        }
+            // Unirse a multicast en todas las interfaces
+            msocket.joinGroup(new InetSocketAddress(grupo, puertoMulticast), null);
 
-        for (Map.Entry<String, ObjectInputStream> entry : receptores.entrySet()) {
-            String idCliente = entry.getKey();
-            ObjectInputStream ois = entry.getValue();
-            new Thread(() -> receptorProxyCliente(idGrupo, idCliente, ois, emisores,
-                    clientes.keySet())).start();
-        }
-    }
+            System.out.println("[SERVIDOR PROXY] Unido a multicast grupo");
 
-    private void receptorProxyCliente(int idGrupo, String idCliente, ObjectInputStream ois,
-                                      Map<String, ObjectOutputStream> emisores, Set<String> todosIds) {
-        System.out.println("[SERVIDOR PROXY-" + idGrupo + "] Receptor iniciado para '" + idCliente + "'");
+            byte[] buffer = new byte[8192];
+            DatagramSocket reenvio = new DatagramSocket();
 
-        while (true) {
-            try {
-                Object obj = ois.readObject();
-                String tipoObj = obj.getClass().getSimpleName();
-                System.out.println("[SERVIDOR PROXY-" + idGrupo + "] >>> RECIBIDO de '" + idCliente +
-                        "': " + tipoObj);
+            while (true) {
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                msocket.receive(packet);
 
-                if (obj instanceof Heartbeat) {
-                    Heartbeat hb = (Heartbeat) obj;
-                    System.out.println("[SERVIDOR PROXY-" + idGrupo + "]     Heartbeat de '" +
-                            hb.idCliente + "'");
-                    clienteUltimoHeartbeat.put(hb.idCliente, System.currentTimeMillis());
+                System.out.println("[SERVIDOR PROXY] >>> RECIBIDO paquete (" + packet.getLength() + " bytes)");
 
-                } else if (obj instanceof EventoCarrera) {
-                    EventoCarrera ev = (EventoCarrera) obj;
-                    System.out.println("[SERVIDOR PROXY-" + idGrupo + "]     Evento: " + ev.tipo +
-                            " de '" + ev.idCliente + "' pos=" + ev.pos);
+                try {
+                    ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData(), 0, packet.getLength());
+                    ObjectInputStream ois = new ObjectInputStream(bais);
+                    Object obj = ois.readObject();
 
-                } else if (obj instanceof FinCarrera) {
-                    System.out.println("[SERVIDOR PROXY-" + idGrupo + "]     FinCarrera");
-                }
+                    if (obj instanceof EventoCarrera) {
+                        EventoCarrera ev = (EventoCarrera) obj;
+                        System.out.println("[SERVIDOR PROXY]     Evento: " + ev.tipo + " de '" + ev.idCliente + "' pos=" + ev.pos);
+                        grupoPosiciones.get(idGrupo).put(ev.idCliente, ev.pos);
 
-                System.out.println("[SERVIDOR PROXY-" + idGrupo + "] === REENVIANDO a: " + todosIds);
-                for (String idDestino : todosIds) {
-                    ObjectOutputStream oosDestino = emisores.get(idDestino);
-                    if (oosDestino != null) {
-                        oosDestino.writeObject(obj);
-                        oosDestino.flush();
-                        System.out.println("[SERVIDOR PROXY-" + idGrupo + "]     -> Enviado a '" +
-                                idDestino + "'");
+                    } else if (obj instanceof Heartbeat) {
+                        Heartbeat hb = (Heartbeat) obj;
+                        System.out.println("[SERVIDOR PROXY]     Heartbeat de '" + hb.idCliente + "'");
+                        clienteUltimoHeartbeat.put(hb.idCliente, System.currentTimeMillis());
+
+                    } else if (obj instanceof FinCarrera) {
+                        System.out.println("[SERVIDOR PROXY]     FinCarrera");
                     }
+                } catch (Exception e) {
+                    System.err.println("[SERVIDOR PROXY ERROR] Deserializar: " + e.getMessage());
                 }
 
-            } catch (EOFException e) {
-                System.err.println("[SERVIDOR PROXY-" + idGrupo + "] Cliente '" + idCliente +
-                        "' desconectado (EOF)");
-                break;
-            } catch (Exception e) {
-                System.err.println("[SERVIDOR PROXY-" + idGrupo + " ERROR] '" + idCliente + "': " +
-                        e.getMessage());
-                break;
+                // REENVIAR el paquete exactamente igual a multicast (para que lo reciban todos)
+                System.out.println("[SERVIDOR PROXY] >>> REENVIANDO a multicast");
+                DatagramPacket reenvioPacket = new DatagramPacket(
+                        packet.getData(),
+                        packet.getLength(),
+                        grupo,
+                        puertoMulticast
+                );
+                reenvio.send(reenvioPacket);
+                System.out.println("[SERVIDOR PROXY]     Reenviado");
             }
+
+        } catch (Exception e) {
+            System.err.println("[SERVIDOR PROXY ERROR] " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -222,16 +194,15 @@ public class ServidorEmparejamiento {
                 List<String> desconectados = new ArrayList<>();
 
                 for (Map.Entry<String, Long> entry : clienteUltimoHeartbeat.entrySet()) {
-                    if (now - entry.getValue() > TIMEOUT_HEARTBEAT) {
+                    long diff = now - entry.getValue();
+                    if (diff > TIMEOUT_HEARTBEAT) {
                         desconectados.add(entry.getKey());
+                        System.out.println("[SERVIDOR MONITOR] !!! TIMEOUT '" + entry.getKey() + "' (" + diff + "ms)");
                     }
                 }
 
-                if (!desconectados.isEmpty()) {
-                    System.out.println("[SERVIDOR MONITOR] Clientes con timeout: " + desconectados);
-                    for (String idCliente : desconectados) {
-                        clienteUltimoHeartbeat.remove(idCliente);
-                    }
+                for (String idCliente : desconectados) {
+                    clienteUltimoHeartbeat.remove(idCliente);
                 }
             } catch (Exception e) {
                 System.err.println("[SERVIDOR MONITOR ERROR] " + e.getMessage());
