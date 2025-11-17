@@ -7,7 +7,7 @@ public class LanzadorClientes {
         int puertoServidor = 5000;
 
         // Crear 4 clientes con IDs Jugador1 a Jugador4
-        for (int i = 1; i <= 4; i++) {
+        for (int i = 1; i <= 2; i++) {
             String idCliente = "Jugador" + i;
             new Thread(() -> {
                 ClienteCamel cliente = new ClienteCamel(idCliente);

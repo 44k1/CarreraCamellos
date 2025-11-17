@@ -27,7 +27,9 @@ public class ClienteCamel extends JFrame {
     private JLabel lblEstado;
 
     private final int numeroJugadores = 4;
-    private ConcurrentHashMap<String, Integer> posiciones; // id -> posición
+    private ConcurrentHashMap<String, Integer> posiciones;      // id -> posición
+    private ConcurrentHashMap<String, Integer> carriles;        // NUEVO: id -> carril (0-3)
+    private int miCarril = -1;                                   // Mi carril asignado
     private Image camelImage;
 
     // Cambiar a IP de la interfaz local correcta en cada cliente
@@ -39,6 +41,7 @@ public class ClienteCamel extends JFrame {
     public ClienteCamel(String idCliente) {
         this.idCliente = idCliente;
         posiciones = new ConcurrentHashMap<>();
+        carriles = new ConcurrentHashMap<>();
         cargarImagen();
         initGUI();
     }
@@ -80,6 +83,7 @@ public class ClienteCamel extends JFrame {
                 g.setColor(COLOR_CALLE);
                 g.fillRect(0, padding/2, getWidth(), getHeight());
 
+                // Dibujar carriles
                 for (int i = 0; i < numeroJugadores; i++) {
                     int y = padding + i * yEspacio;
                     g.setColor(new Color(200, 180, 150));
@@ -88,18 +92,29 @@ public class ClienteCamel extends JFrame {
                     g.drawLine(0, y + pistaAlto/2, getWidth(), y + pistaAlto/2);
                 }
 
+                // Línea de meta
                 g.setColor(COLOR_LINEA_FIN);
                 g.fillRect(finishX, padding/2, anchoFinish, numeroJugadores * yEspacio);
 
-                int i = 0;
+                // Dibujar camellos usando carriles fijos
                 for (Map.Entry<String, Integer> p : posiciones.entrySet()) {
                     String nombre = p.getKey();
-                    int x = p.getValue();
-                    int y = padding + i * yEspacio;
+                    int pos = p.getValue();
+                    Integer carril = carriles.get(nombre);
 
-                    if (camelImage != null)
+                    if (carril == null) {
+                        // Si no tiene carril, asignarlo
+                        carril = (nombre.hashCode() % numeroJugadores);
+                        if (carril < 0) carril += numeroJugadores;
+                        carriles.put(nombre, carril);
+                    }
+
+                    int y = padding + carril * yEspacio;
+                    int x = pos;
+
+                    if (camelImage != null) {
                         g.drawImage(camelImage, x, y, 50, 40, this);
-                    else {
+                    } else {
                         g.setColor(Color.RED);
                         g.fillOval(x, y + 10, 40, 20);
                     }
@@ -107,7 +122,6 @@ public class ClienteCamel extends JFrame {
                     g.setColor(Color.BLACK);
                     g.setFont(new Font("Arial", Font.BOLD, 12));
                     g.drawString(nombre, x, y + 9);
-                    i++;
                 }
             }
         };
@@ -130,15 +144,40 @@ public class ClienteCamel extends JFrame {
     public void conectarServidor(String ipServidor, int puertoServidor) {
         try {
             lblEstado.setText("Estado: Conectando...");
+            System.out.println("[CLIENTE] Conectando a " + ipServidor + ":" + puertoServidor);
+
             Socket socket = new Socket(ipServidor, puertoServidor);
+            System.out.println("[CLIENTE] Socket conectado");
+
             ObjectOutputStream oos = new ObjectOutputStream(socket.getOutputStream());
-            oos.writeObject(new SolicitudConexion(idCliente));
+            SolicitudConexion solicitud = new SolicitudConexion(idCliente);
+            System.out.println("[CLIENTE] Enviando solicitud: " + solicitud.idCliente);
+            oos.writeObject(solicitud);
             oos.flush();
+
             ObjectInputStream ois = new ObjectInputStream(socket.getInputStream());
+            System.out.println("[CLIENTE] Esperando asignación...");
             AsignacionGrupo asignacion = (AsignacionGrupo) ois.readObject();
+
+            if (asignacion == null) {
+                System.err.println("[CLIENTE ERROR] Asignación es null!");
+                return;
+            }
+
+            System.out.println("[CLIENTE] Asignación recibida: Grupo " + asignacion.idGrupo);
+
             this.idGrupo = asignacion.idGrupo;
             this.ipMulticast = asignacion.ipMulticast;
             this.puertoMulticast = asignacion.puerto;
+
+            // Asignar carril basado en el hash del ID
+            int carril = (idCliente.hashCode() % asignacion.tamGrupo);
+            if (carril < 0) carril += asignacion.tamGrupo;
+            miCarril = carril;
+            carriles.put(idCliente, carril);
+
+            System.out.println("[CLIENTE] Mi carril asignado: " + miCarril + " de " + asignacion.tamGrupo);
+
             socket.close();
 
             posiciones.put(idCliente, 0);
@@ -146,7 +185,7 @@ public class ClienteCamel extends JFrame {
             System.out.println("[CLIENTE] Configuración recibida - Grupo: " + idGrupo +
                     " Multicast: " + ipMulticast + ":" + puertoMulticast);
 
-            unirCanalMulticast();  // AQUÍ SE DEBE UNIR A MULTICAST
+            unirCanalMulticast();
 
             // Enviar evento inicial
             enviarEvento(EventoCarrera.TipoEvento.PASO, 0);
@@ -164,38 +203,25 @@ public class ClienteCamel extends JFrame {
         }
     }
 
-    private void enviarHeartbeat() {
-        new Thread(() -> {
-            while (!carreraTerminada) {
-                try {
-                    Heartbeat hb = new Heartbeat(idCliente, System.currentTimeMillis());
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    ObjectOutputStream oos = new ObjectOutputStream(baos);
-                    oos.writeObject(hb);
-                    oos.flush();
-                    byte[] data = baos.toByteArray();
-                    DatagramPacket packet = new DatagramPacket(data, data.length, grupo, puertoMulticast);
-                    multicastSocket.send(packet);
-                    Thread.sleep(5000); // Enviar cada 5 segundos
-                } catch (Exception e) {
-                    if (!carreraTerminada) e.printStackTrace();
-                }
-            }
-        }).start();
-    }
     private void unirCanalMulticast() throws IOException {
         grupo = InetAddress.getByName(ipMulticast);
         multicastSocket = new MulticastSocket(puertoMulticast);
 
-        NetworkInterface ni = NetworkInterface.getByInetAddress(InetAddress.getByName(INTERFAZ_RED_LOCAL));
-        if (ni != null) multicastSocket.setNetworkInterface(ni);
+        NetworkInterface ni = null;
+        try {
+            ni = NetworkInterface.getByInetAddress(InetAddress.getByName(INTERFAZ_RED_LOCAL));
+            multicastSocket.setNetworkInterface(ni);
+            System.out.println("[CLIENTE] Interfaz de red configurada: " + INTERFAZ_RED_LOCAL);
+        } catch (Exception e) {
+            System.out.println("[CLIENTE] Warning: No se pudo configurar interfaz de red, usando default");
+        }
 
         multicastSocket.joinGroup(grupo);
-        System.out.println("[CLIENTE] Unido a multicast");
+        System.out.println("[CLIENTE] Unido a multicast " + ipMulticast + ":" + puertoMulticast);
 
-        // Iniciar heartbeat thread
+        // THREAD HEARTBEAT - CRÍTICO
         new Thread(() -> {
-            System.out.println("[CLIENTE] Iniciando heartbeat...");
+            System.out.println("[CLIENTE] Thread heartbeat iniciado");
             while (!carreraTerminada) {
                 try {
                     Heartbeat hb = new Heartbeat(idCliente, System.currentTimeMillis());
@@ -206,42 +232,47 @@ public class ClienteCamel extends JFrame {
                     byte[] data = baos.toByteArray();
                     DatagramPacket packet = new DatagramPacket(data, data.length, grupo, puertoMulticast);
                     multicastSocket.send(packet);
-                    System.out.println("[CLIENTE] Heartbeat enviado");
-                    Thread.sleep(5000);
+                    System.out.println("[CLIENTE] Heartbeat enviado (" + data.length + " bytes)");
+                    Thread.sleep(3000);
                 } catch (Exception e) {
-                    System.err.println("[CLIENTE ERROR Heartbeat] " + e.getMessage());
+                    System.err.println("[CLIENTE] Error en heartbeat: " + e.getMessage());
                 }
             }
         }).start();
 
-        // Thread receptor
-        Thread receptor = new Thread(() -> {
-            System.out.println("[CLIENTE] Receptor multicast iniciado");
+        // THREAD RECEPTOR
+        new Thread(() -> {
+            System.out.println("[CLIENTE] Thread receptor iniciado");
             while (!carreraTerminada) {
                 try {
                     byte[] buffer = new byte[4096];
                     DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                     multicastSocket.receive(packet);
+                    System.out.println("[CLIENTE] Paquete recibido (" + packet.getLength() + " bytes)");
+
                     ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData(), 0, packet.getLength());
                     ObjectInputStream ois = new ObjectInputStream(bais);
                     Object obj = ois.readObject();
+
                     if (obj instanceof EventoCarrera) {
                         EventoCarrera evento = (EventoCarrera) obj;
+                        System.out.println("[CLIENTE] Evento " + evento.tipo + " de " + evento.idCliente +
+                                " pos=" + evento.pos);
                         procesarEventoCarrera(evento);
+                    } else if (obj instanceof Heartbeat) {
+                        Heartbeat hb = (Heartbeat) obj;
+                        System.out.println("[CLIENTE] Heartbeat recibido de " + hb.idCliente);
                     } else if (obj instanceof FinCarrera) {
                         FinCarrera fin = (FinCarrera) obj;
+                        System.out.println("[CLIENTE] Fin de carrera recibido");
                         procesarFinCarrera(fin);
                     }
                 } catch (Exception e) {
-                    if (!carreraTerminada) System.err.println("[CLIENTE ERROR Receptor] " + e.getMessage());
+                    if (!carreraTerminada) System.err.println("[CLIENTE] Error receptor: " + e.getMessage());
                 }
             }
-        });
-        receptor.setDaemon(true);
-        receptor.start();
+        }).start();
     }
-
-
 
     private void avanzarCamello() {
         if (carreraTerminada) return;
@@ -258,7 +289,7 @@ public class ClienteCamel extends JFrame {
         }
         posiciones.put(idCliente, miPosicion);
         lblPosicion.setText("Tu posición: " + miPosicion + " / " + META);
-        repaint();
+        SwingUtilities.invokeLater(this::repaint);
     }
 
     private void enviarEvento(EventoCarrera.TipoEvento tipo, int pos) {
@@ -282,10 +313,20 @@ public class ClienteCamel extends JFrame {
         }
     }
 
-
     private void procesarEventoCarrera(EventoCarrera evento) {
+        System.out.println("[CLIENTE] Procesando evento de " + evento.idCliente);
         posiciones.put(evento.idCliente, evento.pos);
-        repaint();
+
+        // Asignar carril si no lo tiene
+        Integer carril = carriles.get(evento.idCliente);
+        if (carril == null) {
+            carril = (evento.idCliente.hashCode() % numeroJugadores);
+            if (carril < 0) carril += numeroJugadores;
+            carriles.put(evento.idCliente, carril);
+            System.out.println("[CLIENTE] Carril asignado a " + evento.idCliente + ": " + carril);
+        }
+
+        SwingUtilities.invokeLater(this::repaint);
     }
 
     private void procesarFinCarrera(FinCarrera fin) {
@@ -297,7 +338,8 @@ public class ClienteCamel extends JFrame {
                 ranking.append(i + 1).append(". ").append(fin.ranking.get(i)).append("\n");
             }
             lblEstado.setText("Carrera finalizada");
-            JOptionPane.showMessageDialog(this, ranking.toString(), "Fin de Carrera", JOptionPane.INFORMATION_MESSAGE);
+            JOptionPane.showMessageDialog(this, ranking.toString(), "Fin de Carrera",
+                    JOptionPane.INFORMATION_MESSAGE);
         });
     }
 

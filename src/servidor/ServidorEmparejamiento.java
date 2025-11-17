@@ -106,55 +106,73 @@ public class ServidorEmparejamiento {
         new Thread(() -> proxyMulticast(idGrupo, ipMulticast, puertoMulticast)).start();
     }
 
-    // Proxy UDP que recibe multicast cantante reenviando a todos clientes
     private void proxyMulticast(int idGrupo, String ipMulticast, int puertoMulticast) {
         try {
             MulticastSocket msocket = new MulticastSocket(puertoMulticast);
             msocket.joinGroup(InetAddress.getByName(ipMulticast));
-            DatagramSocket dsocket = new DatagramSocket();
 
             byte[] buffer = new byte[8192];
-            System.out.println("[SERVIDOR] Proxy multicast iniciado para grupo " + idGrupo);
+            System.out.println("[SERVIDOR] Proxy multicast iniciado para grupo " + idGrupo +
+                    " (" + ipMulticast + ":" + puertoMulticast + ")");
 
             while(true) {
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                msocket.receive(packet);
+                try {
+                    msocket.receive(packet);
 
-                // Deserializar para update heartbeat o posiciones
-                ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData(), 0, packet.getLength());
-                ObjectInputStream ois = new ObjectInputStream(bais);
-                Object obj = ois.readObject();
+                    // Deserializar para loguear qué se recibió
+                    ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData(), 0, packet.getLength());
+                    ObjectInputStream ois = new ObjectInputStream(bais);
+                    Object obj = ois.readObject();
 
-                String idCliente = null;
+                    String idCliente = null;
 
-                if(obj instanceof EventoCarrera) {
-                    EventoCarrera ev = (EventoCarrera) obj;
-                    idCliente = ev.idCliente;
-                    grupoPosiciones.get(idGrupo).put(ev.idCliente, ev.pos);
-                } else if(obj instanceof Heartbeat){
-                    Heartbeat hb = (Heartbeat) obj;
-                    idCliente = hb.idCliente;
-                    clienteUltimoHeartbeat.put(hb.idCliente, System.currentTimeMillis());
-                } else if(obj instanceof FinCarrera) {
-                    // Reenviar fin carrera a todos clientes UDP directos
-                }
+                    if(obj instanceof EventoCarrera) {
+                        EventoCarrera ev = (EventoCarrera) obj;
+                        idCliente = ev.idCliente;
+                        System.out.println("[SERVIDOR PROXY] Evento " + ev.tipo + " de " + ev.idCliente +
+                                " pos=" + ev.pos + " en grupo " + idGrupo);
 
-                if(idCliente != null && !clienteUltimoHeartbeat.containsKey(idCliente)){
-                    clienteUltimoHeartbeat.put(idCliente, System.currentTimeMillis());
-                }
+                        // Actualizar posiciones del servidor
+                        Map<String, Integer> posiciones = grupoPosiciones.get(idGrupo);
+                        if(posiciones != null) {
+                            posiciones.put(ev.idCliente, ev.pos);
+                        }
 
-                // Reenviar paquete a todos los clientes UDP multicast
-                for(Socket cliente : clientesPorGrupo.get(idGrupo)) {
-                    InetAddress clientIp = cliente.getInetAddress();
-                    DatagramPacket sendPacket = new DatagramPacket(packet.getData(), packet.getLength(), clientIp, puertoMulticast);
-                    dsocket.send(sendPacket);
+                    } else if(obj instanceof Heartbeat) {
+                        Heartbeat hb = (Heartbeat) obj;
+                        idCliente = hb.idCliente;
+                        clienteUltimoHeartbeat.put(hb.idCliente, System.currentTimeMillis());
+                        System.out.println("[SERVIDOR PROXY] Heartbeat de " + hb.idCliente);
+                    }
+
+                    // IMPORTANTE: Reenviar el paquete EXACTAMENTE igual a TODOS los clientes del grupo
+                    // usando multicast (así todos lo reciben)
+                    DatagramSocket reenvio = new DatagramSocket();
+                    DatagramPacket envio = new DatagramPacket(
+                            packet.getData(),
+                            packet.getLength(),
+                            InetAddress.getByName(ipMulticast),
+                            puertoMulticast
+                    );
+                    reenvio.send(envio);
+                    reenvio.close();
+
+                    System.out.println("[SERVIDOR PROXY] Reenviado a multicast " + ipMulticast + ":" + puertoMulticast);
+
+                } catch (EOFException e) {
+                    // Ignorar fin de stream
+                } catch (Exception e) {
+                    System.err.println("[SERVIDOR PROXY ERROR] " + e.getMessage());
                 }
             }
 
         } catch(Exception e) {
             System.err.println("[SERVIDOR ERROR Proxy] " + e.getMessage());
+            e.printStackTrace();
         }
     }
+
 
     private void monitorHeartbeat() {
         while(true) {
