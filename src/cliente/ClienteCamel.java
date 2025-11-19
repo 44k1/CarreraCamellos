@@ -162,7 +162,6 @@ public class ClienteCamel extends JFrame {
 
             lblEstado.setText("En carrera - Grupo " + idGrupo);
             btnAvanzar.setEnabled(true);
-            avanzarUno();
 
             SwingUtilities.invokeLater(this::repaint);
 
@@ -420,34 +419,7 @@ public class ClienteCamel extends JFrame {
         dialogo.setVisible(true);
     }
 
-    private void avanzarUno(){
-        if (carreraTerminada) return;
-        try {
-            while(!btnAvanzar.isEnabled()){
-                Thread.sleep(10);
 
-            }
-
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        }
-        System.out.println("[CLIENTE SYNC]  ESPERANDO 1 SEGUNDO PARA SYNC");
-        miPosicion += 1;
-
-        if (miPosicion >= META) {
-            miPosicion = META;
-            enviarEvento(EventoCarrera.TipoEvento.META, miPosicion);
-            btnAvanzar.setEnabled(false);
-            lblEstado.setText("¡HAS LLEGADO A LA META!");
-        } else {
-            enviarEvento(EventoCarrera.TipoEvento.PASO, miPosicion);
-        }
-
-        posiciones.put(idCliente, miPosicion);
-        lblPosicion.setText("Tu posición: " + miPosicion + " / " + META);
-        SwingUtilities.invokeLater(this::repaint);
-
-    }
 
 
     public static void main(String[] args) {
