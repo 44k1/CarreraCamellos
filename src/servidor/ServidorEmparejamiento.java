@@ -24,6 +24,9 @@ public class ServidorEmparejamiento {
     private Map<String, Long> clienteUltimoHeartbeat = new ConcurrentHashMap<>();
     private Map<Integer, Map<String, Integer>> grupoPosiciones = new ConcurrentHashMap<>();
 
+    // Map para guardar ObjectOutputStream por cliente
+    private Map<String, ObjectOutputStream> outputStreamsPorCliente = new ConcurrentHashMap<>();
+
     private static final long TIMEOUT_HEARTBEAT = 20000;
 
     public ServidorEmparejamiento() throws IOException {
@@ -74,6 +77,7 @@ public class ServidorEmparejamiento {
             SolicitudConexion solicitud = (SolicitudConexion) obj;
             String idCliente = solicitud.idCliente;
             System.out.println("[SERVIDOR] Cliente conectado: '" + idCliente + "'");
+
             agregarClienteAEspera(cliente, idCliente, oos);
 
         } catch (Exception e) {
@@ -87,13 +91,14 @@ public class ServidorEmparejamiento {
         grupoPosiciones.computeIfAbsent(siguienteIdGrupo, k -> new ConcurrentHashMap<>()).put(idCliente, 0);
         clienteUltimoHeartbeat.put(idCliente, System.currentTimeMillis());
 
-        // Guardar el ObjectOutputStream en un mapa si quieres enviar mensajes más adelante
+        // Guardar el ObjectOutputStream una vez y reutilizarlo
+        outputStreamsPorCliente.put(idCliente, oos);
 
         int clientesActuales = clientesPorGrupo.get(siguienteIdGrupo).size();
         System.out.println("[SERVIDOR] Clientes en grupo " + siguienteIdGrupo + ": " + clientesActuales);
 
         if (clientesActuales == TAM_GRUPO) {
-            System.out.println("[SERVIDOR] GRUPO " + siguienteIdGrupo + " listo, enviando asignación y arrancando proxy");
+            System.out.println("[SERVIDOR] GRUPO " + siguienteIdGrupo + " listo - asignando...");
             try {
                 asignarGrupo(siguienteIdGrupo);
             } catch (IOException e) {
@@ -113,15 +118,14 @@ public class ServidorEmparejamiento {
 
         AsignacionGrupo asignacion = new AsignacionGrupo(idGrupo, ipMulticast, puertoMulticast, TAM_GRUPO, System.currentTimeMillis());
 
-        for (Socket cliente : listaClientes) {
+        for (String clienteId : outputStreamsPorCliente.keySet()) {
+            ObjectOutputStream oos = outputStreamsPorCliente.get(clienteId);
             try {
-                ObjectOutputStream oos = new ObjectOutputStream(cliente.getOutputStream());
-                oos.flush();
                 oos.writeObject(asignacion);
                 oos.flush();
-                System.out.println("[SERVIDOR] AsignacionGrupo enviado!");
+                System.out.println("[SERVIDOR] AsignacionGrupo enviado a " + clienteId + "!");
             } catch (IOException e) {
-                System.err.println("[SERVIDOR ERROR] Al enviar asignación: " + e.getMessage());
+                System.err.println("[SERVIDOR ERROR] Al enviar asignación a " + clienteId + ": " + e.getMessage());
             }
         }
 
@@ -136,6 +140,7 @@ public class ServidorEmparejamiento {
 
             InetAddress grupo = InetAddress.getByName(ipMulticast);
 
+            // Unirse a grupo multicast en cualquier interfaz
             msocket.joinGroup(new InetSocketAddress(grupo, puertoMulticast), null);
 
             System.out.println("[SERVIDOR PROXY] Unido a multicast " + ipMulticast + ":" + puertoMulticast);
@@ -148,12 +153,13 @@ public class ServidorEmparejamiento {
                     DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
                     msocket.receive(packet);
 
-                    System.out.println("[SERVIDOR PROXY] Recibido UDP (" + packet.getLength() + " bytes)");
+                    System.out.println("[SERVIDOR PROXY] Paquete UDP recibido (" + packet.getLength() + " bytes)");
 
+                    // Deserializar para loguear
                     try (ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData(), 0, packet.getLength());
                          ObjectInputStream ois = new ObjectInputStream(bais)) {
                         Object obj = ois.readObject();
-                        System.out.println("[SERVIDOR PROXY] Evento recibido: " + obj.getClass().getSimpleName());
+                        System.out.println("[SERVIDOR PROXY] Objeto recibido: " + obj.getClass().getSimpleName());
 
                         if (obj instanceof EventoCarrera) {
                             EventoCarrera ev = (EventoCarrera) obj;
@@ -165,19 +171,21 @@ public class ServidorEmparejamiento {
                             System.out.println("[SERVIDOR PROXY] Heartbeat de " + hb.idCliente);
                         }
                     } catch (Exception e) {
-                        System.err.println("[SERVIDOR PROXY] Error en deserialización UDP: " + e.getMessage());
+                        System.err.println("[SERVIDOR PROXY] Error deserializando UDP: " + e.getMessage());
                     }
 
-                    DatagramPacket reenvio = new DatagramPacket(packet.getData(), packet.getLength(), grupo, puertoMulticast);
-                    reenvioSocket.send(reenvio);
-                    System.out.println("[SERVIDOR PROXY] UDP reenviado a multicast");
+                    // Reenviar el paquete EXACTO a multicast
+                    DatagramPacket reenvioPacket = new DatagramPacket(packet.getData(), packet.getLength(), grupo, puertoMulticast);
+                    reenvioSocket.send(reenvioPacket);
+                    System.out.println("[SERVIDOR PROXY] Paquete reenviado a multicast");
 
                 } catch (IOException e) {
                     System.err.println("[SERVIDOR PROXY] Error UDP recv/send: " + e.getMessage());
                 }
             }
         } catch (Exception e) {
-            System.err.println("[SERVIDOR PROXY] Fatal: " + e.getMessage());
+            System.err.println("[SERVIDOR PROXY ERROR] Fatal: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -199,7 +207,7 @@ public class ServidorEmparejamiento {
                     System.out.println("[SERVIDOR MONITOR] Cliente desconectado por timeout: " + idCliente);
                 }
             } catch (Exception e) {
-                System.err.println("[SERVIDOR MONITOR] Error: " + e.getMessage());
+                System.err.println("[SERVIDOR MONITOR ERROR] " + e.getMessage());
             }
         }
     }
