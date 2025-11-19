@@ -264,88 +264,160 @@ public class ClienteCamel extends JFrame {
         btnAvanzar.setEnabled(false);
         lblEstado.setText("¡CARRERA FINALIZADA!");
 
-        // Crear diálogo con podio
-        JDialog dialogo = new JDialog(this, "PODIO FINAL", true);
-        dialogo.setSize(500, 400);
+        // Crear diálogo con las mismas dimensiones que la ventana principal
+        JDialog dialogo = new JDialog(this, "🏆 PODIO FINAL - Grupo " + fin.idGrupo + " 🏆", true);
+        dialogo.setSize(800, 400);  // Mismo tamaño que la ventana principal
         dialogo.setLayout(new BorderLayout());
         dialogo.setLocationRelativeTo(this);
 
-        // Panel con el podio
+        // Panel con el podio (ocupa todo el ancho)
         JPanel panelPodio = new JPanel() {
             @Override
             protected void paintComponent(Graphics g) {
                 super.paintComponent(g);
                 Graphics2D g2d = (Graphics2D) g;
 
-                g.setColor(Color.WHITE);
-                g.fillRect(0, 0, getWidth(), getHeight());
+                // Fondo degradado
+                GradientPaint gradient = new GradientPaint(0, 0, new Color(240, 240, 255), 0, getHeight(), new Color(200, 220, 255));
+                g2d.setPaint(gradient);
+                g2d.fillRect(0, 0, getWidth(), getHeight());
 
-                int[] posiciones_podio = {150, 50, 250};  // X para 1º, 2º, 3º
-                int[] alturas_podio = {150, 80, 120};     // Altura del podio
-                Color[] colores = {new Color(255, 215, 0), new Color(192, 192, 192), new Color(205, 127, 50)};  // Oro, Plata, Bronce
-                String[] medallas = {"🥇 ORO", "🥈 PLATA", "🥉 BRONCE"};
+                // Título
+                g.setColor(new Color(50, 50, 100));
+                g.setFont(new Font("Arial", Font.BOLD, 28));
+                String titulo = "🏆 PODIO FINAL 🏆";
+                FontMetrics fm = g.getFontMetrics();
+                int tituloX = (getWidth() - fm.stringWidth(titulo)) / 2;
+                g.drawString(titulo, tituloX, 40);
 
-                for (int i = 0; i < Math.min(3, fin.ranking.size()); i++) {
+                // Posiciones del podio (centrado en la ventana)
+                int anchoTotal = getWidth();
+                int anchoPodio = 120;
+                int espaciado = 40;
+                int centroX = anchoTotal / 2;
+
+                int[] posiciones_podio = {
+                        centroX - anchoPodio - espaciado,      // 2º (izquierda)
+                        centroX - anchoPodio / 2,               // 1º (centro)
+                        centroX + espaciado                     // 3º (derecha)
+                };
+
+                int[] orden = {1, 0, 2};  // Para dibujar en orden 2º, 1º, 3º
+                int[] alturas_podio = {140, 180, 100};     // Altura del podio (1º más alto)
+                Color[] colores = {
+                        new Color(255, 215, 0),      // Oro
+                        new Color(192, 192, 192),    // Plata
+                        new Color(205, 127, 50)      // Bronce
+                };
+                String[] medallas = {"🥇", "🥈", "🥉"};
+                String[] textoMedallas = {"ORO", "PLATA", "BRONCE"};
+
+                // Dibujar podios
+                for (int idx = 0; idx < 3; idx++) {
+                    int i = orden[idx];
+                    if (i >= fin.ranking.size()) continue;
+
                     String nombre = fin.ranking.get(i);
-                    int x = posiciones_podio[i];
+                    int x = posiciones_podio[idx];
                     int altura = alturas_podio[i];
 
-                    // Dibujar podio
-                    g.setColor(colores[i]);
-                    g.fillRect(x, getHeight() - altura, 100, altura);
+                    // Dibujar sombra del podio
+                    g.setColor(new Color(0, 0, 0, 30));
+                    g.fillRect(x + 5, getHeight() - altura + 5, anchoPodio, altura);
+
+                    // Dibujar podio con degradado
+                    GradientPaint podioGradient = new GradientPaint(
+                            x, getHeight() - altura, colores[i].brighter(),
+                            x, getHeight(), colores[i].darker()
+                    );
+                    g2d.setPaint(podioGradient);
+                    g2d.fillRect(x, getHeight() - altura, anchoPodio, altura);
 
                     // Borde del podio
-                    g.setColor(Color.BLACK);
-                    g2d.setStroke(new BasicStroke(2));
-                    g2d.drawRect(x, getHeight() - altura, 100, altura);
+                    g.setColor(colores[i].darker().darker());
+                    g2d.setStroke(new BasicStroke(3));
+                    g2d.drawRect(x, getHeight() - altura, anchoPodio, altura);
 
-                    // Número de posición
-                    g.setFont(new Font("Arial", Font.BOLD, 24));
-                    g.drawString(String.valueOf(i + 1), x + 40, getHeight() - altura / 2);
+                    // Número de posición en el podio
+                    g.setColor(Color.WHITE);
+                    g.setFont(new Font("Arial", Font.BOLD, 48));
+                    String posText = String.valueOf(i + 1);
+                    fm = g.getFontMetrics();
+                    int posX = x + (anchoPodio - fm.stringWidth(posText)) / 2;
+                    int posY = getHeight() - altura / 2 + 15;
 
-                    // Nombre del camello
+                    // Sombra del número
+                    g.setColor(new Color(0, 0, 0, 100));
+                    g.drawString(posText, posX + 2, posY + 2);
+
+                    // Número
+                    g.setColor(Color.WHITE);
+                    g.drawString(posText, posX, posY);
+
+                    // Medalla encima del podio
+                    g.setFont(new Font("Arial", Font.PLAIN, 40));
+                    String medalla = medallas[i];
+                    fm = g.getFontMetrics();
+                    int medallaX = x + (anchoPodio - fm.stringWidth(medalla)) / 2;
+                    g.drawString(medalla, medallaX, getHeight() - altura - 50);
+
+                    // Texto de medalla
+                    g.setColor(new Color(50, 50, 100));
                     g.setFont(new Font("Arial", Font.BOLD, 12));
-                    g.drawString(nombre, x + 5, getHeight() - 10);
+                    fm = g.getFontMetrics();
+                    int textoX = x + (anchoPodio - fm.stringWidth(textoMedallas[i])) / 2;
+                    g.drawString(textoMedallas[i], textoX, getHeight() - altura - 30);
 
-                    // Medalla
+                    // Nombre del camello debajo del podio
+                    g.setColor(Color.BLACK);
                     g.setFont(new Font("Arial", Font.BOLD, 14));
-                    g.drawString(medallas[i], x + 15, getHeight() - altura - 20);
+                    fm = g.getFontMetrics();
+                    int nombreX = x + (anchoPodio - fm.stringWidth(nombre)) / 2;
+
+                    // Fondo para el nombre
+                    g.setColor(new Color(255, 255, 255, 200));
+                    g.fillRoundRect(nombreX - 5, getHeight() - 25, fm.stringWidth(nombre) + 10, 20, 10, 10);
+
+                    g.setColor(new Color(50, 50, 100));
+                    g.drawString(nombre, nombreX, getHeight() - 10);
+                }
+
+                // Mostrar resto de participantes si hay más de 3
+                if (fin.ranking.size() > 3) {
+                    g.setColor(new Color(50, 50, 100));
+                    g.setFont(new Font("Arial", Font.PLAIN, 12));
+                    int yPos = 80;
+                    g.drawString("Otros participantes:", 20, yPos);
+                    for (int i = 3; i < fin.ranking.size(); i++) {
+                        yPos += 20;
+                        g.drawString((i + 1) + ". " + fin.ranking.get(i), 20, yPos);
+                    }
                 }
             }
         };
 
         dialogo.add(panelPodio, BorderLayout.CENTER);
 
-        // Panel con info
-        JPanel panelInfo = new JPanel();
-        panelInfo.setLayout(new BoxLayout(panelInfo, BoxLayout.Y_AXIS));
-        panelInfo.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-
-        JLabel titulo = new JLabel("🏆 RESULTADOS FINALES 🏆");
-        titulo.setFont(new Font("Arial", Font.BOLD, 16));
-        titulo.setAlignmentX(Component.CENTER_ALIGNMENT);
-        panelInfo.add(titulo);
-        panelInfo.add(Box.createVerticalStrut(10));
-
-        // Lista completa de clasificación
-        for (int i = 0; i < fin.ranking.size(); i++) {
-            String nombre = fin.ranking.get(i);
-            String posicion = String.format("%d. %s", i + 1, nombre);
-            JLabel lbl = new JLabel(posicion);
-            lbl.setFont(new Font("Arial", Font.PLAIN, 12));
-            panelInfo.add(lbl);
-        }
-
-        panelInfo.add(Box.createVerticalStrut(15));
+        // Panel inferior con botón de cierre
+        JPanel panelInferior = new JPanel();
+        panelInferior.setBackground(new Color(240, 240, 255));
+        panelInferior.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
         JButton btnCerrar = new JButton("Cerrar");
-        btnCerrar.setAlignmentX(Component.CENTER_ALIGNMENT);
+        btnCerrar.setFont(new Font("Arial", Font.BOLD, 14));
+        btnCerrar.setPreferredSize(new Dimension(120, 35));
+        btnCerrar.setBackground(new Color(100, 150, 255));
+        btnCerrar.setForeground(Color.WHITE);
+        btnCerrar.setFocusPainted(false);
+        btnCerrar.setBorder(BorderFactory.createEmptyBorder(5, 15, 5, 15));
         btnCerrar.addActionListener(e -> dialogo.dispose());
-        panelInfo.add(btnCerrar);
 
-        dialogo.add(panelInfo, BorderLayout.EAST);
+        panelInferior.add(btnCerrar);
+        dialogo.add(panelInferior, BorderLayout.SOUTH);
+
         dialogo.setVisible(true);
     }
+
 
 
     public static void main(String[] args) {
