@@ -10,7 +10,7 @@ Juego multijugador en tiempo real desarrollado en Java donde los jugadores contr
 - **Comunicación TCP persistente**: Streams bidireccionales para máxima fiabilidad
 - **Redistribución de eventos**: El servidor sincroniza posiciones entre jugadores del mismo grupo en tiempo real
 - **Podio visual**: Resultado final con medallas (🥇🥈🥉) y ranking completo
-- **Advance 1 paso por clic**: Control simple y preciso del movimiento
+- **Advance 1-3 pasos por clic**: Control simple y preciso del movimiento
 
 ## 🏗️ Arquitectura
 
@@ -28,7 +28,7 @@ Cliente (conecta vía TCP)
 
 ## 📋 Requisitos
 
-- Java 21+
+- Java 17-21+
 - `camel.png` en el directorio raíz del cliente (50x40 píxeles recomendado)
 
 ## 🚀 Ejecución
@@ -59,7 +59,6 @@ Se solicitará ingresar un ID de jugador (ej: "Jugador1").
 
 1. **Conexión**: Cliente se conecta al servidor en `localhost:5000`
 2. **Emparejamiento**: Espera a que 2 jugadores estén listos
-3. **Cuenta atrás**: Visualiza "3... 2... 1... ¡YA!" en pantalla grande
 4. **Carrera**: Click en "AVANZAR CAMELLO" = +1 posición (20px)
 5. **Meta**: Primer jugador en alcanzar 650px gana
 6. **Podio**: Visualización del ranking final con medallas
@@ -69,7 +68,6 @@ Se solicitará ingresar un ID de jugador (ej: "Jugador1").
 ### Protocolo (`protocolos/`)
 - `SolicitudConexion`: Solicitud inicial del cliente
 - `AsignacionGrupo`: Información del grupo asignado
-- `CuentaAtras`: Countdown sincronizado (3, 2, 1, 0)
 - `InicioCarrera`: Señal para habilitar controles
 - `EventoCarrera`: Eventos de movimiento/meta
 - `Heartbeat`: Pulso para mantener conexión viva
@@ -86,7 +84,7 @@ Se solicitará ingresar un ID de jugador (ej: "Jugador1").
 En `ServidorEmparejamiento.java`:
 ```java
 private final int puertoControl = 5000;    // Puerto TCP del servidor
-private final int TAM_GRUPO = 2;            // Jugadores por grupo
+private final int TAM_GRUPO = 4;            // Jugadores por grupo
 private final int MAX_GRUPOS = 3;           // Máximo de grupos simultáneos
 private final int META = 650;               // Píxeles para llegar a meta
 private static final long TIMEOUT_HEARTBEAT = 20000;  // Timeout en ms
@@ -102,7 +100,6 @@ cliente.conectarServidor("192.168.x.x", 5000);  // IP del servidor
 ## 📊 Sincronización
 
 - **Heartbeat**: Clientes envían pulso cada 3 segundos
-- **Cuenta atrás**: 1 segundo entre cada número
 - **Redistribución**: El servidor envía eventos a otros clientes <5ms
 - **Finalización**: Todos reciben ranking idéntico simultáneamente
 
@@ -111,7 +108,7 @@ cliente.conectarServidor("192.168.x.x", 5000);  // IP del servidor
 El sistema imprime logs detallados:
 - `[SERVIDOR]`: Eventos del servidor
 - `[CLIENTE]`: Eventos del cliente
-- `[SERVIDOR PROXY]` / `[CLIENTE RX]`: Comunicación en tiempo real
-- `[SERVIDOR MONITOR]`: Monitoreo de timeouts
+- `[SERVIDOR ERROR]` / `[CLIENTE RX]`: Comunicación en tiempo real
+- `[SERVIDOR MONITOR]` / `[CLIENTE HB]`: Monitoreo de timeouts y Heartbeats
 
 
