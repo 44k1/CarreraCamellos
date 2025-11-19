@@ -159,9 +159,10 @@ public class ClienteCamel extends JFrame {
 
             // Thread receptor
             iniciarReceptor();
-            avanzarUno();
+
             lblEstado.setText("En carrera - Grupo " + idGrupo);
             btnAvanzar.setEnabled(true);
+            avanzarUno();
 
             SwingUtilities.invokeLater(this::repaint);
 
@@ -422,7 +423,11 @@ public class ClienteCamel extends JFrame {
     private void avanzarUno(){
         if (carreraTerminada) return;
         try {
-            Thread.sleep(1000);
+            while(!btnAvanzar.isEnabled()){
+                Thread.sleep(10);
+
+            }
+
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
