@@ -5,6 +5,7 @@ import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
 public class ServidorEmparejamiento {
 
@@ -13,6 +14,7 @@ public class ServidorEmparejamiento {
     private int siguienteIdGrupo = 0;
     private final int TAM_GRUPO = 2;
     private final int MAX_GRUPOS = 3;
+    private final int META = 650;
 
     private List<String> ipsMulticast = Arrays.asList(
             "239.0.0.1", "239.0.0.2", "239.0.0.3"
@@ -23,6 +25,8 @@ public class ServidorEmparejamiento {
     private Map<Integer, List<ClienteInfo>> clientesPorGrupo = new ConcurrentHashMap<>();
     private Map<String, Long> clienteUltimoHeartbeat = new ConcurrentHashMap<>();
     private Map<Integer, Map<String, Integer>> grupoPosiciones = new ConcurrentHashMap<>();
+    private Map<Integer, Boolean> grupoFinalizado = new ConcurrentHashMap<>(); // Controla si el grupo terminó
+    private Map<Integer, List<String>> grupoRanking = new ConcurrentHashMap<>(); // Ranking final por grupo
 
     private static final long TIMEOUT_HEARTBEAT = 20000;
 
@@ -46,6 +50,7 @@ public class ServidorEmparejamiento {
         System.out.println("[SERVIDOR] ========================================");
         System.out.println("[SERVIDOR] Servidor iniciado en puerto " + puertoControl);
         System.out.println("[SERVIDOR] TAM_GRUPO = " + TAM_GRUPO);
+        System.out.println("[SERVIDOR] META = " + META);
         System.out.println("[SERVIDOR] ========================================");
     }
 
@@ -109,6 +114,8 @@ public class ServidorEmparejamiento {
             ClienteInfo info = new ClienteInfo(idCliente, socket, oos, ois);
             clientesPorGrupo.computeIfAbsent(idGrupo, k -> new ArrayList<>()).add(info);
             grupoPosiciones.computeIfAbsent(idGrupo, k -> new ConcurrentHashMap<>()).put(idCliente, 0);
+            grupoFinalizado.putIfAbsent(idGrupo, false);
+            grupoRanking.putIfAbsent(idGrupo, new ArrayList<>());
             clienteUltimoHeartbeat.put(idCliente, System.currentTimeMillis());
 
             int clientesActuales = clientesPorGrupo.get(idGrupo).size();
@@ -158,13 +165,17 @@ public class ServidorEmparejamiento {
                     // Actualizar posición
                     grupoPosiciones.get(idGrupo).put(evento.idCliente, evento.pos);
 
+                    // Verificar si alcanzó la meta
+                    if (evento.tipo == EventoCarrera.TipoEvento.META && evento.pos >= META) {
+                        procesarLlegadaMeta(idGrupo, evento.idCliente);
+                    }
+
                     // Redistribuir a TODOS los clientes del grupo EXCEPTO el emisor
                     redistribuirEvento(idGrupo, evento, idCliente);
 
                 } else if (obj instanceof Heartbeat) {
                     Heartbeat hb = (Heartbeat) obj;
                     clienteUltimoHeartbeat.put(hb.idCliente, System.currentTimeMillis());
-                    System.out.println("[SERVIDOR] Heartbeat de '" + hb.idCliente + "'");
                 }
 
             } catch (EOFException e) {
@@ -177,7 +188,73 @@ public class ServidorEmparejamiento {
         }
     }
 
+    private synchronized void procesarLlegadaMeta(int idGrupo, String idCliente) {
+        // Si ya finalizó, ignorar
+        if (grupoFinalizado.get(idGrupo)) {
+            return;
+        }
+
+        System.out.println("[SERVIDOR] *** CLIENTE '" + idCliente + "' LLEGÓ A LA META ***");
+
+        // Agregar al ranking
+        List<String> ranking = grupoRanking.get(idGrupo);
+        if (!ranking.contains(idCliente)) {
+            ranking.add(idCliente);
+        }
+
+        // Si todos llegaron a la meta O el primero llegó, finalizar
+        Map<String, Integer> posiciones = grupoPosiciones.get(idGrupo);
+        long llegados = posiciones.values().stream().filter(p -> p >= META).count();
+
+        // Finalizar cuando el primero llegue o todos lleguen
+        if (ranking.size() == 1 || llegados == posiciones.size()) {
+            finalizarCarrera(idGrupo);
+        }
+    }
+
+    private void finalizarCarrera(int idGrupo) {
+        grupoFinalizado.put(idGrupo, true);
+
+        // Calcular ranking final completo ordenado por posición
+        Map<String, Integer> posiciones = grupoPosiciones.get(idGrupo);
+        List<String> rankingFinal = posiciones.entrySet().stream()
+                .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue())) // Ordenar de mayor a menor posición
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+
+        System.out.println("[SERVIDOR] ========================================");
+        System.out.println("[SERVIDOR] CARRERA FINALIZADA - Grupo " + idGrupo);
+        System.out.println("[SERVIDOR] Ranking final:");
+        for (int i = 0; i < rankingFinal.size(); i++) {
+            System.out.println("[SERVIDOR]   " + (i + 1) + ". " + rankingFinal.get(i) + " (" + posiciones.get(rankingFinal.get(i)) + ")");
+        }
+        System.out.println("[SERVIDOR] ========================================");
+
+        // Crear mensaje de finalización con tu estructura
+        FinCarrera finCarrera = new FinCarrera(idGrupo, rankingFinal);
+
+        // Enviar a TODOS los clientes del grupo
+        List<ClienteInfo> clientes = clientesPorGrupo.get(idGrupo);
+        if (clientes != null) {
+            for (ClienteInfo info : clientes) {
+                try {
+                    info.oos.writeObject(finCarrera);
+                    info.oos.flush();
+                    System.out.println("[SERVIDOR] FinCarrera enviado a " + info.id);
+                } catch (IOException e) {
+                    System.err.println("[SERVIDOR ERROR] Al enviar FinCarrera a " + info.id + ": " + e.getMessage());
+                }
+            }
+        }
+    }
+
+
     private void redistribuirEvento(int idGrupo, EventoCarrera evento, String emisor) {
+        // No redistribuir si la carrera ya terminó
+        if (grupoFinalizado.get(idGrupo)) {
+            return;
+        }
+
         List<ClienteInfo> clientes = clientesPorGrupo.get(idGrupo);
         if (clientes == null) return;
 
@@ -190,7 +267,6 @@ public class ServidorEmparejamiento {
             try {
                 info.oos.writeObject(evento);
                 info.oos.flush();
-                System.out.println("[SERVIDOR] Evento reenviado a '" + info.id + "'");
             } catch (IOException e) {
                 System.err.println("[SERVIDOR ERROR] Al reenviar evento a '" + info.id + "': " + e.getMessage());
             }
