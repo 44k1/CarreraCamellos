@@ -12,11 +12,11 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class ClienteCamel extends JFrame {
     private String idCliente;
-    private String ipMulticast;
-    private int puertoMulticast;
     private int idGrupo;
-    private MulticastSocket multicastSocket;
-    private InetAddress grupo;
+    private Socket socketServidor;
+    private ObjectOutputStream oosServidor;
+    private ObjectInputStream oisServidor;
+
     private int miPosicion = 0;
     private final int META = 650;
     private boolean carreraTerminada = false;
@@ -96,8 +96,7 @@ public class ClienteCamel extends JFrame {
                     Integer carril = carriles.get(nombre);
 
                     if (carril == null) {
-                        carril = (nombre.hashCode() % numeroJugadores);
-                        if (carril < 0) carril += numeroJugadores;
+                        carril = Math.abs(nombre.hashCode() % numeroJugadores);
                         carriles.put(nombre, carril);
                     }
 
@@ -134,178 +133,107 @@ public class ClienteCamel extends JFrame {
     }
 
     public void conectarServidor(String ipServidor, int puertoServidor) {
-        Socket socket = null;
-        ObjectOutputStream oos = null;
-        ObjectInputStream ois = null;
-
         try {
-            lblEstado.setText("Estado: Conectando al servidor...");
-            System.out.println("[CLIENTE] ========================================");
+            lblEstado.setText("Estado: Conectando...");
             System.out.println("[CLIENTE] Conectando a " + ipServidor + ":" + puertoServidor);
 
-            socket = new Socket(ipServidor, puertoServidor);
-            System.out.println("[CLIENTE] Socket conectado");
-
-            // IMPORTANTE: Crear OOS primero y hacer flush
-            oos = new ObjectOutputStream(socket.getOutputStream());
-            oos.flush();
-            System.out.println("[CLIENTE] ObjectOutputStream creado y flushed");
-
-            // Ahora crear OIS
-            ois = new ObjectInputStream(socket.getInputStream());
-            System.out.println("[CLIENTE] ObjectInputStream creado");
+            socketServidor = new Socket(ipServidor, puertoServidor);
+            oosServidor = new ObjectOutputStream(socketServidor.getOutputStream());
+            oosServidor.flush();
+            oisServidor = new ObjectInputStream(socketServidor.getInputStream());
 
             SolicitudConexion solicitud = new SolicitudConexion(idCliente);
-            System.out.println("[CLIENTE] >>> Enviando SolicitudConexion: '" + solicitud.idCliente + "'");
-            oos.writeObject(solicitud);
-            oos.flush();
-            System.out.println("[CLIENTE] Solicitud enviada");
+            oosServidor.writeObject(solicitud);
+            oosServidor.flush();
 
-            System.out.println("[CLIENTE] Esperando AsignacionGrupo...");
-            Object objAsignacion = ois.readObject();
-            System.out.println("[CLIENTE] Objeto recibido: " + objAsignacion.getClass().getSimpleName());
-
-            if (!(objAsignacion instanceof AsignacionGrupo)) {
-                System.err.println("[CLIENTE ERROR] Recibido: " + objAsignacion.getClass());
-                return;
-            }
-
-            AsignacionGrupo asignacion = (AsignacionGrupo) objAsignacion;
+            AsignacionGrupo asignacion = (AsignacionGrupo) oisServidor.readObject();
             this.idGrupo = asignacion.idGrupo;
-            this.ipMulticast = asignacion.ipMulticast;
-            this.puertoMulticast = asignacion.puerto;
 
-            System.out.println("[CLIENTE] >>> Asignación recibida:");
-            System.out.println("[CLIENTE]     Grupo: " + asignacion.idGrupo);
-            System.out.println("[CLIENTE]     Multicast: " + asignacion.ipMulticast + ":" + asignacion.puerto);
-            System.out.println("[CLIENTE]     TamGrupo: " + asignacion.tamGrupo);
-
-            socket.close();
-            System.out.println("[CLIENTE] Socket TCP cerrado");
+            System.out.println("[CLIENTE] Asignado a grupo " + idGrupo);
 
             posiciones.put(idCliente, 0);
-            int carril = (idCliente.hashCode() % asignacion.tamGrupo);
-            if (carril < 0) carril += asignacion.tamGrupo;
+            int carril = Math.abs(idCliente.hashCode() % asignacion.tamGrupo);
             carriles.put(idCliente, carril);
-            System.out.println("[CLIENTE] Mi carril: " + carril);
 
-            // Unirse a multicast
-            unirCanalMulticast();
+            // Thread heartbeat
+            iniciarHeartbeat();
 
-            System.out.println("[CLIENTE] ========================================");
+            // Thread receptor
+            iniciarReceptor();
+
+            lblEstado.setText("En carrera - Grupo " + idGrupo);
+            btnAvanzar.setEnabled(true);
+            SwingUtilities.invokeLater(this::repaint);
 
         } catch (Exception e) {
-            lblEstado.setText("ERROR: " + e.getMessage());
-            System.err.println("[CLIENTE ERROR] " + e.getMessage());
             e.printStackTrace();
+            JOptionPane.showMessageDialog(this, "Error: " + e.getMessage());
         }
     }
 
-    private void unirCanalMulticast() throws Exception {
-        System.out.println("[CLIENTE MCAST] Uniendo a multicast...");
-
-        grupo = InetAddress.getByName(ipMulticast);
-        System.out.println("[CLIENTE MCAST] InetAddress creado: " + grupo);
-
-        multicastSocket = new MulticastSocket(puertoMulticast);
-        multicastSocket.setReuseAddress(true);
-        System.out.println("[CLIENTE MCAST] MulticastSocket creado en puerto " + puertoMulticast);
-
-        try {
-            NetworkInterface ni = NetworkInterface.getByInetAddress(InetAddress.getLocalHost());
-            if (ni != null) {
-                multicastSocket.setNetworkInterface(ni);
-                System.out.println("[CLIENTE MCAST] Interfaz configurada: " + ni.getName());
-            }
-        } catch (Exception e) {
-            System.out.println("[CLIENTE MCAST] Warning: No se pudo configurar interfaz");
-        }
-
-        multicastSocket.joinGroup(new InetSocketAddress(grupo, puertoMulticast), null);
-        System.out.println("[CLIENTE MCAST] Unido a grupo multicast " + ipMulticast + ":" + puertoMulticast);
-
-        // Thread heartbeat
+    private void iniciarHeartbeat() {
         new Thread(() -> {
-            System.out.println("[CLIENTE HB] Thread iniciado");
             while (!carreraTerminada) {
                 try {
                     Heartbeat hb = new Heartbeat(idCliente, System.currentTimeMillis());
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    ObjectOutputStream oos = new ObjectOutputStream(baos);
-                    oos.writeObject(hb);
-                    oos.flush();
-                    byte[] data = baos.toByteArray();
-                    DatagramPacket packet = new DatagramPacket(data, data.length, grupo, puertoMulticast);
-                    multicastSocket.send(packet);
-                    System.out.println("[CLIENTE HB] >>> Enviado (" + data.length + " bytes)");
+                    oosServidor.writeObject(hb);
+                    oosServidor.flush();
                     Thread.sleep(3000);
                 } catch (Exception e) {
                     if (!carreraTerminada) {
                         System.err.println("[CLIENTE HB ERROR] " + e.getMessage());
                     }
+                    break;
                 }
             }
         }).start();
+    }
 
-        // Thread receptor
+    private void iniciarReceptor() {
         new Thread(() -> {
-            System.out.println("[CLIENTE RX] Thread iniciado");
             while (!carreraTerminada) {
                 try {
-                    byte[] buffer = new byte[8192];
-                    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                    multicastSocket.receive(packet);
-                    System.out.println("[CLIENTE RX] <<< RECIBIDO (" + packet.getLength() + " bytes)");
-
-                    ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData(), 0, packet.getLength());
-                    ObjectInputStream ois = new ObjectInputStream(bais);
-                    Object obj = ois.readObject();
-
-                    System.out.println("[CLIENTE RX]     Tipo: " + obj.getClass().getSimpleName());
+                    Object obj = oisServidor.readObject();
 
                     if (obj instanceof EventoCarrera) {
                         EventoCarrera evento = (EventoCarrera) obj;
-                        System.out.println("[CLIENTE RX]     Evento " + evento.tipo + " de '" + evento.idCliente + "' pos=" + evento.pos);
-                        procesarEventoCarrera(evento);
+                        System.out.println("[CLIENTE RX] Evento de '" + evento.idCliente + "' pos=" + evento.pos);
 
-                    } else if (obj instanceof Heartbeat) {
-                        Heartbeat hb = (Heartbeat) obj;
-                        System.out.println("[CLIENTE RX]     Heartbeat de '" + hb.idCliente + "'");
+                        posiciones.put(evento.idCliente, evento.pos);
+
+                        // Asignar carril si no tiene
+                        if (!carriles.containsKey(evento.idCliente)) {
+                            int carril = Math.abs(evento.idCliente.hashCode() % numeroJugadores);
+                            carriles.put(evento.idCliente, carril);
+                        }
+
+                        SwingUtilities.invokeLater(this::repaint);
 
                     } else if (obj instanceof FinCarrera) {
+                        carreraTerminada = true;
                         FinCarrera fin = (FinCarrera) obj;
-                        System.out.println("[CLIENTE RX]     FinCarrera");
-                        procesarFinCarrera(fin);
+                        SwingUtilities.invokeLater(() -> mostrarRanking(fin));
                     }
+
                 } catch (EOFException e) {
-                    System.err.println("[CLIENTE RX] EOF");
+                    System.err.println("[CLIENTE] Servidor cerró conexión");
                     break;
                 } catch (Exception e) {
                     if (!carreraTerminada) {
                         System.err.println("[CLIENTE RX ERROR] " + e.getMessage());
                     }
+                    break;
                 }
             }
         }).start();
-
-        // Esperar un poco antes de enviar evento inicial
-        Thread.sleep(500);
-        enviarEvento(EventoCarrera.TipoEvento.PASO, 0);
-
-        lblEstado.setText("Estado: En carrera - Grupo " + idGrupo);
-        btnAvanzar.setEnabled(true);
-        SwingUtilities.invokeLater(this::repaint);
     }
 
     private void avanzarCamello() {
         if (carreraTerminada) return;
-        System.out.println("[CLIENTE BTN] AVANZAR PRESIONADO");
 
         Random r = new Random();
         int pasos = r.nextInt(3) + 1;
         miPosicion += pasos * 20;
-
-        System.out.println("[CLIENTE BTN] Pasos: " + pasos + " -> Nueva posición: " + miPosicion);
 
         if (miPosicion >= META) {
             miPosicion = META;
@@ -322,43 +250,24 @@ public class ClienteCamel extends JFrame {
     }
 
     private void enviarEvento(EventoCarrera.TipoEvento tipo, int pos) {
-        if (multicastSocket == null) {
-            System.err.println("[CLIENTE TX ERROR] multicastSocket es null!");
-            return;
-        }
         try {
             EventoCarrera evento = new EventoCarrera(tipo, idCliente, System.currentTimeMillis(), pos);
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            ObjectOutputStream oos = new ObjectOutputStream(baos);
-            oos.writeObject(evento);
-            oos.flush();
-            byte[] data = baos.toByteArray();
-            DatagramPacket packet = new DatagramPacket(data, data.length, grupo, puertoMulticast);
-            multicastSocket.send(packet);
-            System.out.println("[CLIENTE TX] >>> Evento " + tipo + " pos=" + pos + " (" + data.length + " bytes)");
-        } catch (IOException e) {
+            oosServidor.writeObject(evento);
+            oosServidor.flush();
+            System.out.println("[CLIENTE TX] Evento " + tipo + " pos=" + pos);
+        } catch (Exception e) {
             System.err.println("[CLIENTE TX ERROR] " + e.getMessage());
-            e.printStackTrace();
         }
     }
 
-    private void procesarEventoCarrera(EventoCarrera evento) {
-        System.out.println("[CLIENTE PROC] Procesando evento de '" + evento.idCliente + "'");
-        posiciones.put(evento.idCliente, evento.pos);
-        SwingUtilities.invokeLater(this::repaint);
-    }
-
-    private void procesarFinCarrera(FinCarrera fin) {
-        carreraTerminada = true;
-        SwingUtilities.invokeLater(() -> {
-            btnAvanzar.setEnabled(false);
-            StringBuilder ranking = new StringBuilder("CARRERA FINALIZADA\nRanking:\n");
-            for (int i = 0; i < fin.ranking.size(); i++) {
-                ranking.append(i + 1).append(". ").append(fin.ranking.get(i)).append("\n");
-            }
-            lblEstado.setText("Carrera finalizada");
-            JOptionPane.showMessageDialog(this, ranking.toString(), "Fin de Carrera", JOptionPane.INFORMATION_MESSAGE);
-        });
+    private void mostrarRanking(FinCarrera fin) {
+        btnAvanzar.setEnabled(false);
+        StringBuilder ranking = new StringBuilder("CARRERA FINALIZADA\nRanking:\n");
+        for (int i = 0; i < fin.ranking.size(); i++) {
+            ranking.append(i + 1).append(". ").append(fin.ranking.get(i)).append("\n");
+        }
+        lblEstado.setText("Carrera finalizada");
+        JOptionPane.showMessageDialog(this, ranking.toString(), "Fin de Carrera", JOptionPane.INFORMATION_MESSAGE);
     }
 
     public static void main(String[] args) {

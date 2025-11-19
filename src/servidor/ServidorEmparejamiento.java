@@ -10,7 +10,6 @@ public class ServidorEmparejamiento {
 
     private final int puertoControl = 5000;
     private ServerSocket serverSocket;
-    private Semaphore semaforoIdGrupo = new Semaphore(1);
     private int siguienteIdGrupo = 0;
     private final int TAM_GRUPO = 2;
     private final int MAX_GRUPOS = 3;
@@ -20,14 +19,27 @@ public class ServidorEmparejamiento {
     );
     private int puertoMulticastBase = 6000;
 
-    private Map<Integer, List<Socket>> clientesPorGrupo = new ConcurrentHashMap<>();
+    // Guardar información de clientes por grupo
+    private Map<Integer, List<ClienteInfo>> clientesPorGrupo = new ConcurrentHashMap<>();
     private Map<String, Long> clienteUltimoHeartbeat = new ConcurrentHashMap<>();
     private Map<Integer, Map<String, Integer>> grupoPosiciones = new ConcurrentHashMap<>();
 
-    // Map para guardar ObjectOutputStream por cliente
-    private Map<String, ObjectOutputStream> outputStreamsPorCliente = new ConcurrentHashMap<>();
-
     private static final long TIMEOUT_HEARTBEAT = 20000;
+
+    // Clase interna para guardar info de cliente
+    private static class ClienteInfo {
+        String id;
+        Socket socket;
+        ObjectOutputStream oos;
+        ObjectInputStream ois;
+
+        ClienteInfo(String id, Socket socket, ObjectOutputStream oos, ObjectInputStream ois) {
+            this.id = id;
+            this.socket = socket;
+            this.oos = oos;
+            this.ois = ois;
+        }
+    }
 
     public ServidorEmparejamiento() throws IOException {
         serverSocket = new ServerSocket(puertoControl);
@@ -55,137 +67,133 @@ public class ServidorEmparejamiento {
     private void manejarCliente(Socket cliente) {
         ObjectOutputStream oos = null;
         ObjectInputStream ois = null;
+        String idCliente = null;
+
         try {
-            System.out.println("[SERVIDOR] Inicializando ObjectOutputStream...");
+            System.out.println("[SERVIDOR] Inicializando streams...");
             oos = new ObjectOutputStream(cliente.getOutputStream());
             oos.flush();
-            System.out.println("[SERVIDOR] ObjectOutputStream inicializado!");
-
-            System.out.println("[SERVIDOR] Inicializando ObjectInputStream...");
             ois = new ObjectInputStream(cliente.getInputStream());
-            System.out.println("[SERVIDOR] ObjectInputStream inicializado!");
+            System.out.println("[SERVIDOR] Streams inicializados!");
 
             Object obj = ois.readObject();
-            System.out.println("[SERVIDOR] Objeto recibido: " + obj.getClass().getSimpleName());
-
             if (!(obj instanceof SolicitudConexion)) {
-                System.err.println("[SERVIDOR ERROR] Objeto no es SolicitudConexion: " + obj.getClass());
+                System.err.println("[SERVIDOR ERROR] Objeto no es SolicitudConexion");
                 cliente.close();
                 return;
             }
 
             SolicitudConexion solicitud = (SolicitudConexion) obj;
-            String idCliente = solicitud.idCliente;
+            idCliente = solicitud.idCliente;
             System.out.println("[SERVIDOR] Cliente conectado: '" + idCliente + "'");
 
-            agregarClienteAEspera(cliente, idCliente, oos);
+            int idGrupo = agregarClienteAEspera(idCliente, cliente, oos, ois);
+
+            // Mantener conexión abierta y escuchar eventos del cliente
+            escucharEventosCliente(idCliente, idGrupo, ois);
 
         } catch (Exception e) {
-            System.err.println("[SERVIDOR ERROR] En manejarCliente: " + e.getMessage());
-            try { if (cliente != null) cliente.close(); } catch (Exception ignored) {}
+            System.err.println("[SERVIDOR ERROR] En manejarCliente '" + idCliente + "': " + e.getMessage());
+        } finally {
+            if (idCliente != null) {
+                clienteUltimoHeartbeat.remove(idCliente);
+                System.out.println("[SERVIDOR] Cliente desconectado: " + idCliente);
+            }
         }
     }
 
-    private void agregarClienteAEspera(Socket cliente, String idCliente, ObjectOutputStream oos) {
-        clientesPorGrupo.computeIfAbsent(siguienteIdGrupo, k -> new ArrayList<>()).add(cliente);
-        grupoPosiciones.computeIfAbsent(siguienteIdGrupo, k -> new ConcurrentHashMap<>()).put(idCliente, 0);
-        clienteUltimoHeartbeat.put(idCliente, System.currentTimeMillis());
+    private int agregarClienteAEspera(String idCliente, Socket socket, ObjectOutputStream oos, ObjectInputStream ois) throws IOException {
+        synchronized (this) {
+            int idGrupo = siguienteIdGrupo;
 
-        // Guardar el ObjectOutputStream una vez y reutilizarlo
-        outputStreamsPorCliente.put(idCliente, oos);
+            ClienteInfo info = new ClienteInfo(idCliente, socket, oos, ois);
+            clientesPorGrupo.computeIfAbsent(idGrupo, k -> new ArrayList<>()).add(info);
+            grupoPosiciones.computeIfAbsent(idGrupo, k -> new ConcurrentHashMap<>()).put(idCliente, 0);
+            clienteUltimoHeartbeat.put(idCliente, System.currentTimeMillis());
 
-        int clientesActuales = clientesPorGrupo.get(siguienteIdGrupo).size();
-        System.out.println("[SERVIDOR] Clientes en grupo " + siguienteIdGrupo + ": " + clientesActuales);
+            int clientesActuales = clientesPorGrupo.get(idGrupo).size();
+            System.out.println("[SERVIDOR] Clientes en grupo " + idGrupo + ": " + clientesActuales + "/" + TAM_GRUPO);
 
-        if (clientesActuales == TAM_GRUPO) {
-            System.out.println("[SERVIDOR] GRUPO " + siguienteIdGrupo + " listo - asignando...");
-            try {
-                asignarGrupo(siguienteIdGrupo);
-            } catch (IOException e) {
-                System.err.println("[SERVIDOR ERROR] Al asignar grupo: " + e.getMessage());
+            if (clientesActuales == TAM_GRUPO) {
+                System.out.println("[SERVIDOR] GRUPO " + idGrupo + " completo - asignando...");
+                asignarGrupo(idGrupo);
+                siguienteIdGrupo = (siguienteIdGrupo + 1) % MAX_GRUPOS;
             }
-            siguienteIdGrupo++;
-            if (siguienteIdGrupo >= MAX_GRUPOS) {
-                siguienteIdGrupo = 0;
-            }
+
+            return idGrupo;
         }
     }
 
     private void asignarGrupo(int idGrupo) throws IOException {
-        List<Socket> listaClientes = clientesPorGrupo.get(idGrupo);
+        List<ClienteInfo> listaClientes = clientesPorGrupo.get(idGrupo);
         String ipMulticast = ipsMulticast.get(idGrupo % ipsMulticast.size());
         int puertoMulticast = puertoMulticastBase + idGrupo;
 
         AsignacionGrupo asignacion = new AsignacionGrupo(idGrupo, ipMulticast, puertoMulticast, TAM_GRUPO, System.currentTimeMillis());
 
-        for (String clienteId : outputStreamsPorCliente.keySet()) {
-            ObjectOutputStream oos = outputStreamsPorCliente.get(clienteId);
+        for (ClienteInfo info : listaClientes) {
             try {
-                oos.writeObject(asignacion);
-                oos.flush();
-                System.out.println("[SERVIDOR] AsignacionGrupo enviado a " + clienteId + "!");
+                info.oos.writeObject(asignacion);
+                info.oos.flush();
+                System.out.println("[SERVIDOR] AsignacionGrupo enviado a " + info.id);
             } catch (IOException e) {
-                System.err.println("[SERVIDOR ERROR] Al enviar asignación a " + clienteId + ": " + e.getMessage());
+                System.err.println("[SERVIDOR ERROR] Al enviar asignación a " + info.id + ": " + e.getMessage());
             }
         }
 
-        new Thread(() -> proxyMulticastUDP(idGrupo, ipMulticast, puertoMulticast)).start();
-        System.out.println("[SERVIDOR] Proxy multicast UDP iniciado para grupo " + idGrupo);
+        System.out.println("[SERVIDOR] Grupo " + idGrupo + " iniciado con " + listaClientes.size() + " clientes");
     }
 
-    private void proxyMulticastUDP(int idGrupo, String ipMulticast, int puertoMulticast) {
-        try {
-            MulticastSocket msocket = new MulticastSocket(puertoMulticast);
-            msocket.setReuseAddress(true);
+    private void escucharEventosCliente(String idCliente, int idGrupo, ObjectInputStream ois) {
+        System.out.println("[SERVIDOR] Escuchando eventos de '" + idCliente + "' en grupo " + idGrupo);
 
-            InetAddress grupo = InetAddress.getByName(ipMulticast);
+        while (true) {
+            try {
+                Object obj = ois.readObject();
 
-            // Unirse a grupo multicast en cualquier interfaz
-            msocket.joinGroup(new InetSocketAddress(grupo, puertoMulticast), null);
+                if (obj instanceof EventoCarrera) {
+                    EventoCarrera evento = (EventoCarrera) obj;
+                    System.out.println("[SERVIDOR] Evento " + evento.tipo + " de '" + evento.idCliente + "' pos=" + evento.pos);
 
-            System.out.println("[SERVIDOR PROXY] Unido a multicast " + ipMulticast + ":" + puertoMulticast);
+                    // Actualizar posición
+                    grupoPosiciones.get(idGrupo).put(evento.idCliente, evento.pos);
 
-            DatagramSocket reenvioSocket = new DatagramSocket();
+                    // Redistribuir a TODOS los clientes del grupo EXCEPTO el emisor
+                    redistribuirEvento(idGrupo, evento, idCliente);
 
-            while (true) {
-                try {
-                    byte[] buffer = new byte[8192];
-                    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                    msocket.receive(packet);
-
-                    System.out.println("[SERVIDOR PROXY] Paquete UDP recibido (" + packet.getLength() + " bytes)");
-
-                    // Deserializar para loguear
-                    try (ByteArrayInputStream bais = new ByteArrayInputStream(packet.getData(), 0, packet.getLength());
-                         ObjectInputStream ois = new ObjectInputStream(bais)) {
-                        Object obj = ois.readObject();
-                        System.out.println("[SERVIDOR PROXY] Objeto recibido: " + obj.getClass().getSimpleName());
-
-                        if (obj instanceof EventoCarrera) {
-                            EventoCarrera ev = (EventoCarrera) obj;
-                            grupoPosiciones.get(idGrupo).put(ev.idCliente, ev.pos);
-                            System.out.println("[SERVIDOR PROXY] Evento tipo " + ev.tipo + " de " + ev.idCliente);
-                        } else if (obj instanceof Heartbeat) {
-                            Heartbeat hb = (Heartbeat) obj;
-                            clienteUltimoHeartbeat.put(hb.idCliente, System.currentTimeMillis());
-                            System.out.println("[SERVIDOR PROXY] Heartbeat de " + hb.idCliente);
-                        }
-                    } catch (Exception e) {
-                        System.err.println("[SERVIDOR PROXY] Error deserializando UDP: " + e.getMessage());
-                    }
-
-                    // Reenviar el paquete EXACTO a multicast
-                    DatagramPacket reenvioPacket = new DatagramPacket(packet.getData(), packet.getLength(), grupo, puertoMulticast);
-                    reenvioSocket.send(reenvioPacket);
-                    System.out.println("[SERVIDOR PROXY] Paquete reenviado a multicast");
-
-                } catch (IOException e) {
-                    System.err.println("[SERVIDOR PROXY] Error UDP recv/send: " + e.getMessage());
+                } else if (obj instanceof Heartbeat) {
+                    Heartbeat hb = (Heartbeat) obj;
+                    clienteUltimoHeartbeat.put(hb.idCliente, System.currentTimeMillis());
+                    System.out.println("[SERVIDOR] Heartbeat de '" + hb.idCliente + "'");
                 }
+
+            } catch (EOFException e) {
+                System.out.println("[SERVIDOR] Cliente '" + idCliente + "' cerró conexión");
+                break;
+            } catch (Exception e) {
+                System.err.println("[SERVIDOR ERROR] Leyendo evento de '" + idCliente + "': " + e.getMessage());
+                break;
             }
-        } catch (Exception e) {
-            System.err.println("[SERVIDOR PROXY ERROR] Fatal: " + e.getMessage());
-            e.printStackTrace();
+        }
+    }
+
+    private void redistribuirEvento(int idGrupo, EventoCarrera evento, String emisor) {
+        List<ClienteInfo> clientes = clientesPorGrupo.get(idGrupo);
+        if (clientes == null) return;
+
+        for (ClienteInfo info : clientes) {
+            // NO enviar al cliente que envió el evento originalmente
+            if (info.id.equals(emisor)) {
+                continue;
+            }
+
+            try {
+                info.oos.writeObject(evento);
+                info.oos.flush();
+                System.out.println("[SERVIDOR] Evento reenviado a '" + info.id + "'");
+            } catch (IOException e) {
+                System.err.println("[SERVIDOR ERROR] Al reenviar evento a '" + info.id + "': " + e.getMessage());
+            }
         }
     }
 
@@ -204,7 +212,7 @@ public class ServidorEmparejamiento {
 
                 for (String idCliente : desconectados) {
                     clienteUltimoHeartbeat.remove(idCliente);
-                    System.out.println("[SERVIDOR MONITOR] Cliente desconectado por timeout: " + idCliente);
+                    System.out.println("[SERVIDOR MONITOR] Cliente timeout: " + idCliente);
                 }
             } catch (Exception e) {
                 System.err.println("[SERVIDOR MONITOR ERROR] " + e.getMessage());
