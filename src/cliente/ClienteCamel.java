@@ -159,10 +159,10 @@ public class ClienteCamel extends JFrame {
 
             // Thread receptor
             iniciarReceptor();
-
+            avanzarUno();
             lblEstado.setText("En carrera - Grupo " + idGrupo);
             btnAvanzar.setEnabled(true);
-            avanzarUno();
+
             SwingUtilities.invokeLater(this::repaint);
 
         } catch (Exception e) {
@@ -421,8 +421,12 @@ public class ClienteCamel extends JFrame {
 
     private void avanzarUno(){
         if (carreraTerminada) return;
-
-
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+        System.out.println("[CLIENTE SYNC]  ESPERANDO 1 SEGUNDO PARA SYNC");
         miPosicion += 1;
 
         if (miPosicion >= META) {
